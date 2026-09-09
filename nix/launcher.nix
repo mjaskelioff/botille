@@ -7,14 +7,40 @@
   allowLan ? false,
 }:
 let
+  inherit (pkgs.lib) optionals optionalString;
+  isDarwin = pkgs.stdenv.isDarwin;
   staticFlags = builtins.concatStringsSep " \\\n      " podmanFlags;
   hostPortsInit = builtins.concatStringsSep " " (map toString hostPorts);
   allowLanInit = if allowLan then "true" else "false";
+  # On Darwin the hooks are skipped entirely: podman-remote has no
+  # --hooks-dir, and the hook scripts live in the Mac's Nix store, which
+  # the podman machine VM cannot see.
+  hooksFlag = optionalString (hooksDir != null) ''--hooks-dir "${hooksDir}"'';
 in
 pkgs.writeShellApplication {
   name = "botille-run";
-  runtimeInputs = [ pkgs.podman ];
+  # On Darwin, podman must come from the host: the client has to match the
+  # podman machine's server version, and the machine is managed outside Nix.
+  runtimeInputs = optionals (!isDarwin) [ pkgs.podman ];
   text = ''
+    ${optionalString isDarwin ''
+      if ! command -v podman >/dev/null 2>&1; then
+        echo "botille: podman not found — install it (e.g. brew install podman), then: podman machine init && podman machine start" >&2
+        exit 1
+      fi
+      machine_state=$(podman machine inspect --format '{{.State}}' 2>/dev/null || true)
+      if [ "$machine_state" != "running" ]; then
+        echo "botille: no running podman machine (state: ''${machine_state:-none})" >&2
+        echo "botille: run: podman machine start (or podman machine init first)" >&2
+        exit 1
+      fi
+      case "$PWD" in
+        /Users/* | /private/* | /tmp/* | /var/folders/* | /Volumes/*) ;;
+        *)
+          echo "botille: warning: $PWD is outside the podman machine's default shared directories (/Users, /private, /tmp, /var/folders, /Volumes); the /work mount may appear empty" >&2
+          ;;
+      esac
+    ''}
     image="botille:latest"
     marker_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/botille"
     marker_file="$marker_dir/loaded-image"
@@ -64,9 +90,26 @@ pkgs.writeShellApplication {
       tz_env="-e TZ=$TZ"
     fi
     tz_mount=""
-    if [ -f /etc/localtime ]; then
-      tz_mount="-v /etc/localtime:/etc/localtime:ro"
-    fi
+    ${
+      if isDarwin then
+        # Bind sources resolve inside the podman machine VM, so mounting
+        # /etc/localtime would pick up the VM's clock; derive TZ from the
+        # Mac's /etc/localtime symlink instead.
+        ''
+          if [ -z "$tz_env" ]; then
+            _lt=$(readlink /etc/localtime 2>/dev/null || true)
+            case "$_lt" in
+              *zoneinfo/*) tz_env="-e TZ=''${_lt#*zoneinfo/}" ;;
+            esac
+          fi
+        ''
+      else
+        ''
+          if [ -f /etc/localtime ]; then
+            tz_mount="-v /etc/localtime:/etc/localtime:ro"
+          fi
+        ''
+    }
 
     # Runtime flags — these layer on top of the declarative config
     allow_lan=${allowLanInit}
@@ -136,15 +179,31 @@ pkgs.writeShellApplication {
           ;;
       esac
     done
-    lan_annotation="--annotation io.botille.block-lan=true"
-    if [ "$allow_lan" = true ]; then
-      lan_annotation=""
-    fi
-    host_port_annotation=""
-    if [ ''${#host_ports[@]} -gt 0 ]; then
-      host_port_list=$(IFS=,; echo "''${host_ports[*]}")
-      host_port_annotation="--annotation io.botille.allow-host-tcp=$host_port_list"
-    fi
+    ${
+      if isDarwin then
+        ''
+          lan_annotation=""
+          host_port_annotation=""
+          if [ "$allow_lan" != true ]; then
+            echo "botille: warning: LAN blocking is unavailable on macOS (the firewall hooks are Linux-only); the container can reach your LAN" >&2
+          fi
+          if [ ''${#host_ports[@]} -gt 0 ]; then
+            echo "botille: note: --host-port has no effect on macOS; services on the Mac are reachable at host.containers.internal" >&2
+          fi
+        ''
+      else
+        ''
+          lan_annotation="--annotation io.botille.block-lan=true"
+          if [ "$allow_lan" = true ]; then
+            lan_annotation=""
+          fi
+          host_port_annotation=""
+          if [ ''${#host_ports[@]} -gt 0 ]; then
+            host_port_list=$(IFS=,; echo "''${host_ports[*]}")
+            host_port_annotation="--annotation io.botille.allow-host-tcp=$host_port_list"
+          fi
+        ''
+    }
     devshell_env=""
     if [ "$devshell" = true ]; then
       devshell_env="-e BOTILLE_DEVSHELL=1"
@@ -161,7 +220,7 @@ pkgs.writeShellApplication {
 
     echo "botille: starting container" >&2
     # shellcheck disable=SC2086
-    podman --hooks-dir "${hooksDir}" run \
+    podman ${hooksFlag} run \
       ${staticFlags} \
       $tty_flag \
       $lan_annotation \

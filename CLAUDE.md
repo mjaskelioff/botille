@@ -8,6 +8,9 @@
 
 ## Gotchas
 
+- **macOS is client-only** — On Darwin the image is the same Linux derivation (`aarch64-darwin` hosts get the `aarch64-linux` image), substituted from cachix or built inside the podman machine via `scripts/mac-build-image.sh`; a Mac cannot build it natively. The launcher uses the host's `podman` (not the Nix one) against a running `podman machine`, and skips the firewall OCI hooks, so there is no LAN blocking on macOS. When editing `flake.nix`/`nix/launcher.nix`, keep the Linux image derivation unchanged (check `nix eval --raw .#packages.aarch64-linux.container.outPath` before and after) or cache hits are lost.
+- **SELinux hosts need `label=disable`** — per-run MCS categories make one run's writes to the shared volumes unreadable by the next run (first seen in the podman machine's Fedora CoreOS VM; applies to Fedora/RHEL hosts too). The base config sets `securityOpt = [ "label=disable" ]` in `nix/container-options.nix`; do not remove it.
+
 - **podman load fails on re-load** — `podman load` of an image that already exists errors with `copy_file_range: is a directory`. The launcher handles this automatically (skips load when the same Nix store path is already loaded, `podman rmi` before reload otherwise). If debugging manually, always `podman rmi` first.
 - **`CACHIX_AUTH_TOKEN` secret** — CI pushes to the `delirium-systems` cachix cache. The secret must be configured in GitHub repo settings (Settings > Secrets > Actions) for pushes to work. Without it, CI still runs but skips pushing.
 - **Launcher args go to the container command**, not to `podman run` flags. `nix run .# -- foo` runs `foo` inside the container (overriding default CMD `/bin/bash`). Exceptions: `--allow-lan`, `--devshell`, `--host-port`, `--port`/`-p`, `--volume`/`-v` are consumed by the launcher. Runtime flags layer on top of declarative config from `extraContainerModules`.

@@ -122,6 +122,18 @@ nix run 'delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
 - CI (GitHub Actions) pushes all newly-built store paths to the `delirium-systems` cache via `cachix/cachix-action`
 - The in-container `nix.conf` also includes both caches, so `nix build`/`nix shell` inside the container benefit from the same binary cache
 
+## macOS Support
+
+On Darwin the flake builds the same Linux image for the matching architecture (`aarch64-darwin` → `aarch64-linux`); only the launcher is a native Darwin derivation.  Containers run inside the `podman machine` VM, driven by the host's own Podman client (the client must match the machine's server version, so Nix does not provide it on macOS).
+
+Differences from Linux, all confined to `flake.nix` (host/container package set split) and `nix/launcher.nix`:
+
+- The firewall OCI hooks are skipped: they run on the container host with Nix-store binaries, and the VM cannot see the Mac's Nix store; the remote Podman client has no `--hooks-dir` either.  The launcher warns that the LAN is reachable.  `--host-port` is accepted but has no effect; the Mac is reachable from the container at `host.containers.internal`.
+- The launcher checks for a running podman machine and warns when `$PWD` is outside the VM's shared directories (`/Users`, `/private`, `/tmp`, `/var/folders`, `/Volumes`).
+- `/etc/localtime` is not bind-mounted (bind sources resolve inside the VM); the launcher derives `TZ` from the Mac's `/etc/localtime` symlink instead.
+
+A Mac cannot build Linux derivations, so the image must be substituted from the binary cache (CI builds `aarch64-linux` on an arm runner) or built inside the podman machine with `scripts/mac-build-image.sh`.
+
 ## Tech Choices
 
 - **Everything is Nix** — flake app, container image, no separate build tool

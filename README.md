@@ -7,8 +7,8 @@ Run coding agents inside a sandboxed, LAN-isolated rootless Podman container. Ev
 ## 📋 Prerequisites
 
 - [Nix](https://nixos.org/) (with flakes enabled)
-- Rootless Podman host support — the Podman binary itself is provided by Nix, but your host must support rootless containers (user namespaces enabled, `/etc/subuid` + `/etc/subgid` configured). On NixOS, `virtualisation.podman.enable = true` handles this.
-- Supported platforms: `x86_64-linux`, `aarch64-linux`
+- Rootless Podman host support — on Linux the Podman binary itself is provided by Nix, but your host must support rootless containers (user namespaces enabled, `/etc/subuid` + `/etc/subgid` configured). On NixOS, `virtualisation.podman.enable = true` handles this.
+- Supported platforms: `x86_64-linux`, `aarch64-linux`; `aarch64-darwin` with limitations (see [macOS](#-macos))
 
 ## 🔒 What it does
 
@@ -100,6 +100,32 @@ Create a wrapper `flake.nix` to customise the container without forking. `lib.mk
 Then `nix run .` to use your customised container. Modules merge with standard NixOS semantics (lists concatenate, attrsets merge by key). Use `lib.mkForce` to replace defaults instead of merging. Runtime CLI flags (`-v`, `-p`) still work and append after declarative ones.
 
 > **Note:** customised images are not in the cachix cache and will be built locally on first use.
+
+## 🍎 macOS
+
+On macOS, Podman runs Linux containers inside a lightweight VM (`podman machine`).  The container image, and everything in it, is exactly the same Linux image; only the launcher runs natively on the Mac.  Setup is as follows:
+
+1. Install Podman and start a machine.  The launcher uses the host's `podman` (the client must match the machine's server version), so Nix does not provide it on macOS:
+
+   ```sh
+   brew install podman
+   podman machine init
+   podman machine start
+   ```
+
+2. Let Nix substitute the image.  The image is a Linux derivation that a Mac cannot build, so it must come from the binary cache.  Either add yourself to `trusted-users` in `/etc/nix/nix.conf` (then restart the nix daemon) and run with `--accept-flake-config`, or add the substituters and keys from `nix/caches.nix` to `/etc/nix/nix.conf` directly.
+
+3. Run botille from a project directory under `/Users` — the podman machine only shares `/Users`, `/private`, `/tmp`, `/var/folders`, and `/Volumes` with the VM.
+
+   ```sh
+   nix run --accept-flake-config 'github:delirium-systems/botille'
+   ```
+
+### macOS limitations
+
+- **No LAN blocking.**  The firewall is enforced by OCI hooks that run on the container host with Nix-store binaries; on macOS the container host is the podman machine VM, which cannot see the Mac's Nix store, and the remote Podman client has no `--hooks-dir`.  The launcher prints a warning: the container can reach your LAN.  The rest of the sandbox (rootless container inside a VM, only `$PWD` bind-mounted) still applies.
+- **`--host-port` has no effect.**  There is no firewall to open, and pasta's gateway mapping points at the VM, not the Mac.  Services running on the Mac are reachable from the container at `host.containers.internal`.
+- **Images missing from the cache cannot be built locally.**  A Mac cannot build Linux derivations, and customised `mkApp` images are never in the cache.  `scripts/mac-build-image.sh` builds the image inside the podman machine and prints the (sudo) command that imports it into the host store.
 
 ## ⚙️ How it works
 

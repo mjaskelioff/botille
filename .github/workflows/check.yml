@@ -28,3 +28,28 @@ jobs:
 
       - name: Run all checks
         run: nix flake check --print-build-logs
+
+  # Builds and caches the aarch64-linux image — what macOS on Apple
+  # silicon substitutes.  The arm runners have no KVM, so the NixOS VM
+  # tests cannot run here; build the image and the non-VM checks instead.
+  build-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: delirium-systems
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: Build container image and static checks
+        run: |
+          nix build --print-build-logs \
+            .#packages.aarch64-linux.container \
+            .#checks.aarch64-linux.statix \
+            .#checks.aarch64-linux.deadnix

@@ -123,7 +123,16 @@ in
       NET_RAW = mkDefault false;
     };
 
-    securityOpt = [ "no-new-privileges" ];
+    securityOpt = [
+      "no-new-privileges"
+      # SELinux labeling gives each run its own MCS category pair, making
+      # files one run writes to the shared volumes unreadable by the next
+      # (podman machine's Fedora CoreOS VM enforces SELinux, as do
+      # Fedora/RHEL hosts).  The container boundary is the sandbox here,
+      # so disable labeling rather than relabel the multi-GB store with
+      # :Z on every run.
+      "label=disable"
+    ];
 
     network = mkDefault "pasta:-4,--map-gw,-a,10.171.0.100,-n,24,-g,10.171.0.1";
     userns = mkDefault "keep-id:uid=1000,gid=1000";

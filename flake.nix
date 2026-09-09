@@ -45,10 +45,27 @@
           extraContainerModules ? [ ],
         }:
         let
+          # The container image and everything inside it are Linux
+          # derivations.  On Darwin they are built for the matching Linux
+          # architecture and run inside the podman machine VM.
+          containerSystem = { "aarch64-darwin" = "aarch64-linux"; }.${system} or system;
+
           pkgs = import inputs.nixpkgs {
-            inherit system;
+            system = containerSystem;
             config.allowUnfree = true;
           };
+
+          # Host-side packages, used only for the launcher script.
+          hostPkgs =
+            if containerSystem == system then
+              pkgs
+            else
+              import inputs.nixpkgs {
+                inherit system;
+                config.allowUnfree = true;
+              };
+
+          isDarwin = hostPkgs.stdenv.isDarwin;
 
           home = "/home/user";
 
@@ -65,9 +82,9 @@
 
           containerPackages = import ./nix/packages.nix {
             inherit pkgs;
-            llmAgentsPkgs = inputs.llm-agents.packages.${system};
-            homeManagerPkg = inputs.home-manager.packages.${system}.home-manager;
-            serenaPkg = inputs.serena.packages.${system}.default;
+            llmAgentsPkgs = inputs.llm-agents.packages.${containerSystem};
+            homeManagerPkg = inputs.home-manager.packages.${containerSystem}.home-manager;
+            serenaPkg = inputs.serena.packages.${containerSystem}.default;
           };
 
           # Home-manager activation package (built at Nix time, activated at container start).
@@ -121,8 +138,6 @@
               ;
           };
 
-          firewall = import ./nix/firewall.nix { inherit pkgs; };
-
           container = import ./nix/container.nix {
             inherit
               pkgs
@@ -133,15 +148,24 @@
               ;
           };
 
+          # The firewall hook scripts run on the container host.  On Darwin
+          # that host is the podman machine VM, which cannot see the Mac's
+          # Nix store, so the hooks are skipped there (see launcher.nix).
           launcher = import ./nix/launcher.nix {
-            inherit pkgs container podmanFlags;
-            inherit (firewall) hooksDir;
+            pkgs = hostPkgs;
+            inherit container podmanFlags;
+            hooksDir = if isDarwin then null else (import ./nix/firewall.nix { inherit pkgs; }).hooksDir;
             inherit (containerConfig) hostPorts allowLan;
           };
 
         in
         {
-          inherit pkgs container launcher;
+          inherit
+            pkgs
+            hostPkgs
+            container
+            launcher
+            ;
           app = {
             type = "app";
             program = pkgs.lib.getExe launcher;
@@ -153,14 +177,18 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
+        "aarch64-darwin"
       ];
 
       perSystem =
         { system, ... }:
         let
           built = mkBotille { inherit system; };
-          inherit (built) pkgs container launcher;
-          tests = import ./nix/tests.nix { inherit pkgs launcher; };
+          inherit (built) hostPkgs container launcher;
+          tests = import ./nix/tests.nix {
+            pkgs = hostPkgs;
+            inherit launcher;
+          };
         in
         {
           packages = {
@@ -171,19 +199,19 @@
           apps.default = built.app;
 
           checks = {
-            statix = pkgs.runCommand "statix" { nativeBuildInputs = [ pkgs.statix ]; } ''
+            statix = hostPkgs.runCommand "statix" { nativeBuildInputs = [ hostPkgs.statix ]; } ''
               statix check ${inputs.self}
               touch $out
             '';
 
-            deadnix = pkgs.runCommand "deadnix" { nativeBuildInputs = [ pkgs.deadnix ]; } ''
+            deadnix = hostPkgs.runCommand "deadnix" { nativeBuildInputs = [ hostPkgs.deadnix ]; } ''
               deadnix --fail ${inputs.self}
               touch $out
             '';
           }
-          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux tests;
+          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.isLinux tests;
 
-          formatter = pkgs.nixfmt;
+          formatter = hostPkgs.nixfmt;
         };
 
       # Flake library - customise the home-manager configuration baked into
@@ -208,7 +236,11 @@
       #   }
       #
       # Note: customised images are not in the delirium-systems cachix cache
-      # and will be built locally on first use.
+      # and will be built locally on first use.  `system` may also be a
+      # Darwin system: the image is then built for the matching Linux
+      # architecture and run inside the podman machine VM (on macOS,
+      # customised images must be built with scripts/mac-build-image.sh,
+      # since a Mac cannot build Linux derivations).
       flake.lib = {
         mkApp =
           {
