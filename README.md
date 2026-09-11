@@ -43,6 +43,9 @@ nix run 'github:delirium-systems/botille' -- --devshell
 # Expose ports to access web UIs from the host (e.g. opencode)
 nix run 'github:delirium-systems/botille' -- --port 3000 opencode
 nix run 'github:delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
+
+# Share the host's global Claude Code config with the container
+nix run 'github:delirium-systems/botille' -- --share-claude claude
 ```
 
 Your current directory is mounted at `/work` inside the container. File changes persist on the host; credentials and installed packages persist in Podman volumes.
@@ -55,7 +58,11 @@ Pre-built binaries are available from the `delirium-systems` cachix cache — th
 alias botille="nix run 'github:delirium-systems/botille' --"
 ```
 
-Then: `botille`, `botille claude`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`.
+Then: `botille`, `botille claude`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`.
+
+### Sharing your host Claude config
+
+`--share-claude` mounts the host's global Claude Code configuration into the container's config directory (`CLAUDE_CONFIG_DIR=/home/user/.config/claude`): `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, and the current project's state directory (`~/.claude/projects/<munged path>` — memory, session transcripts) read-write, so container sessions read and update the same project memory as host sessions.  Only these three paths are shared; host credentials, settings, and other projects' transcripts stay outside the container.
 
 Inside the container, `claude-yolo` is a shell alias for `claude --dangerously-skip-permissions` — it runs Claude Code with no permission prompts.
 

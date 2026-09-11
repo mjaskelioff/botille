@@ -114,6 +114,7 @@ pkgs.writeShellApplication {
     # Runtime flags — these layer on top of the declarative config
     allow_lan=${allowLanInit}
     devshell=false
+    share_claude=false
     port_flags=()
     host_ports=(${hostPortsInit})
     volume_flags=()
@@ -126,6 +127,10 @@ pkgs.writeShellApplication {
           ;;
         --devshell)
           devshell=true
+          shift
+          ;;
+        --share-claude)
+          share_claude=true
           shift
           ;;
         -p|--port)
@@ -207,6 +212,28 @@ pkgs.writeShellApplication {
     devshell_env=""
     if [ "$devshell" = true ]; then
       devshell_env="-e BOTILLE_DEVSHELL=1"
+    fi
+
+    # --share-claude: expose the host's global Claude Code config inside the
+    # container.  The image sets CLAUDE_CONFIG_DIR=/home/user/.config/claude,
+    # so mounts target that directory, not ~/.claude.  Global instructions and
+    # skills are read-only; the per-project state (memory, transcripts) is
+    # read-write so container sessions persist to the host.  Claude Code keys
+    # project state by the working directory with every non-alphanumeric
+    # character replaced by "-"; inside the container the project is always
+    # /work, hence the fixed "-work" destination.
+    if [ "$share_claude" = true ]; then
+      _host_claude="$HOME/.claude"
+      _cfg=/home/user/.config/claude
+      if [ -f "$_host_claude/CLAUDE.md" ]; then
+        volume_flags+=("-v" "$_host_claude/CLAUDE.md:$_cfg/CLAUDE.md:ro")
+      fi
+      if [ -d "$_host_claude/skills" ]; then
+        volume_flags+=("-v" "$_host_claude/skills:$_cfg/skills:ro")
+      fi
+      _proj="$_host_claude/projects/''${PWD//[^a-zA-Z0-9]/-}"
+      mkdir -p "$_proj"
+      volume_flags+=("-v" "$_proj:$_cfg/projects/-work")
     fi
 
     cidfile=$(mktemp -u "/tmp/botille-cid.XXXXXX")
