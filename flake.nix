@@ -230,7 +230,7 @@
       #           ./extra-hm.nix
       #         ];
       #         extraContainerModules = [
-      #           { volumes = [ "/tmp/claude-dir:/home/user/.config/claude/:Z" ]; }
+      #           { volumes = [ "/tmp/claude-dir:/home/user/.claude/:Z" ]; }
       #         ];
       #       };
       #     };

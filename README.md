@@ -49,6 +49,9 @@ nix run 'github:delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
 
 # Share the host's global Claude Code config with the container
 nix run 'github:delirium-systems/botille' -- --share-claude claude
+
+# Share only the current project's Claude memory and transcripts
+nix run 'github:delirium-systems/botille' -- --share-memory claude
 ```
 
 Your current directory is mounted at `/work/<name>-<hash>` inside the container.  The name comes from the directory basename, and the hash comes from its physical absolute host path.  Repeated launches and symlink aliases use the same container path; directories with the same name at different host paths use different container paths.  File changes persist on the host.  Credentials and installed packages persist in Podman volumes.
@@ -65,11 +68,13 @@ Pre-built binaries are available from the `delirium-systems` cachix cache — th
 alias botille="nix run 'github:delirium-systems/botille' --"
 ```
 
-Then: `botille`, `botille claude`, `botille codex`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`.
+Then: `botille`, `botille claude`, `botille codex`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`, `botille --share-memory claude`.
 
 ### Sharing your host Claude config
 
-`--share-claude` mounts the host's global Claude Code configuration into the container's config directory (`CLAUDE_CONFIG_DIR=/home/user/.config/claude`): `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, and the current project's state directory (`~/.claude/projects/<munged path>` — memory, session transcripts) read-write, so container sessions read and update the same project memory as host sessions.  Only these three paths are shared; host credentials, settings, and other projects' transcripts stay outside the container.
+`--share-claude` mounts the host's global Claude Code configuration into the container's config directory (`CLAUDE_CONFIG_DIR=/home/user/.claude`): `~/.claude/CLAUDE.md` and `~/.claude/skills` read-only, and the current project's state directory (`~/.claude/projects/<munged path>` — memory, session transcripts) read-write, so container sessions read and update the same project memory as host sessions.  Only these three paths are shared; host credentials, settings, and other projects' transcripts stay outside the container.
+
+`--share-memory` performs only the project-state mount, and `--share-claude` implies it.  Use `--share-memory` when the container home has its own agent configuration installed (for example an agent-config clone): the full `--share-claude` mounts would shadow the installed instructions and skills at the same paths, while the memory mount coexists with them.
 
 Inside the container, `claude-yolo` is a shell alias for `claude --dangerously-skip-permissions` — it runs Claude Code with no permission prompts.
 
@@ -127,7 +132,7 @@ Create a wrapper `flake.nix` to customise the container without forking. `lib.mk
       ];
       extraContainerModules = [
         {
-          volumes = [ "/tmp/claude-dir:/home/user/.config/claude/:Z" ];
+          volumes = [ "/tmp/claude-dir:/home/user/.claude/:Z" ];
           environment.MY_VAR = "hello";
           dns = lib.mkForce [ "8.8.8.8" ];
         }
@@ -190,7 +195,7 @@ The primary security boundary is the **rootless Podman container**: the agent ru
 `--host-port PORT` opens a surgical exception for a single TCP port on the host — the host service **must** bind to `127.0.0.1` to prevent LAN exposure.
 `--allow-lan` disables the network firewall entirely for that run — use only when needed.
 
-Claude Code's permission rules (`~/.config/claude/settings.json`) provide a secondary, **advisory** layer. `Read` denies for credential paths (`.ssh`, `.aws`, `.gnupg`, etc.) are enforced by the Read tool. `Bash` deny rules match on literal argument strings only — they do not survive shell expansion or variable indirection, so they prevent accidental access but are not a hard boundary.
+Claude Code's permission rules (`~/.claude/settings.json`) provide a secondary, **advisory** layer. `Read` denies for credential paths (`.ssh`, `.aws`, `.gnupg`, etc.) are enforced by the Read tool. `Bash` deny rules match on literal argument strings only — they do not survive shell expansion or variable indirection, so they prevent accidental access but are not a hard boundary.
 
 **Do not rely on the permission rules to protect secrets.** Keep sensitive files out of the bind-mounted working directory, and treat anything inside the container as potentially visible to the agent.
 

@@ -98,14 +98,20 @@ def check(launcher, mock_bin):
         call, _ = run(first, "--share-claude", "claude")
         state_source = claude / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(first.resolve()))
         state_dest = re.sub(r"[^a-zA-Z0-9]", "-", workdir)
-        assert f"{state_source}:/home/user/.config/claude/projects/{state_dest}" in call["args"]
-        assert f"{claude}/skills:/home/user/.config/claude/skills:ro" in call["args"]
+        assert f"{state_source}:/home/user/.claude/projects/{state_dest}" in call["args"]
+        assert f"{claude}/skills:/home/user/.claude/skills:ro" in call["args"]
         assert state_source.is_dir()
+        # --share-memory performs only the project-state mount.
+        call, _ = run(first, "--share-memory", "claude")
+        assert f"{state_source}:/home/user/.claude/projects/{state_dest}" in call["args"]
+        assert f"{claude}/skills:/home/user/.claude/skills:ro" not in call["args"]
+        assert f"{claude}/CLAUDE.md:/home/user/.claude/CLAUDE.md:ro" not in call["args"]
+        assert command(call["args"]) == ["claude"]
         # bash keeps an inherited logical $PWD that names the cwd; the host
         # state directory must still be keyed by the physical path, matching
         # both host Claude Code (process.cwd()) and the workspace identity.
         call, _ = run(alias, "--share-claude", "claude", env_extra={"PWD": str(alias)})
-        assert f"{state_source}:/home/user/.config/claude/projects/{state_dest}" in call["args"]
+        assert f"{state_source}:/home/user/.claude/projects/{state_dest}" in call["args"]
 
         # A cold image marker makes sure a bad flag fails before any podman
         # call: the image must not be removed and reloaded over a typo.

@@ -75,6 +75,15 @@ unset BASH_COMPLETION_VERSINFO
 echo "Shell environment reloaded." >&2
 RELOAD
 
+# --- Migrate Claude config from the pre-.claude layout ---
+# The image previously set CLAUDE_CONFIG_DIR=~/.config/claude; existing
+# botille-home volumes hold live credentials there.  Move (not symlink:
+# the agent-config installer refuses destinations under symlinked
+# parents) before home-manager activation and before any agent starts.
+if ! [ -e "@home@/.claude" ] && [ -d "@home@/.config/claude" ]; then
+  mv "@home@/.config/claude" "@home@/.claude"
+fi
+
 # --- Activate home-manager (only when configuration changed) ---
 mkdir -p "@home@/.local/state/nix/profiles"
 hm_marker="@home@/.local/state/botille/hm-generation"
@@ -94,7 +103,7 @@ fi
 
 # --- Preserve Claude's existing onboarding defaults at each project path ---
 workdir="${BOTILLE_WORKDIR:-/work}"
-claude_settings="${CLAUDE_CONFIG_DIR:-$HOME/.config/claude}/settings.json"
+claude_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 if [ -f "$claude_settings" ]; then
   # Concurrent launches must not discard one another's project entries.
   # home-manager's claudeSettings activation takes the same lock.
