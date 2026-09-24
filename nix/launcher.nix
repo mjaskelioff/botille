@@ -8,7 +8,7 @@
 }:
 let
   inherit (pkgs.lib) optionals optionalString;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   staticFlags = builtins.concatStringsSep " \\\n      " podmanFlags;
   hostPortsInit = builtins.concatStringsSep " " (map toString hostPorts);
   allowLanInit = if allowLan then "true" else "false";
