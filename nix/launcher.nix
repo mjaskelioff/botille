@@ -62,6 +62,7 @@ pkgs.writeShellApplication {
     allow_lan=${allowLanInit}
     devshell=false
     share_claude=false
+    share_memory=false
     port_flags=()
     host_ports=(${hostPortsInit})
     volume_flags=()
@@ -78,6 +79,10 @@ pkgs.writeShellApplication {
           ;;
         --share-claude)
           share_claude=true
+          shift
+          ;;
+        --share-memory)
+          share_memory=true
           shift
           ;;
         -p|--port)
@@ -238,24 +243,29 @@ pkgs.writeShellApplication {
     fi
 
     # --share-claude: expose the host's global Claude Code config inside the
-    # container.  The image sets CLAUDE_CONFIG_DIR=/home/user/.config/claude,
-    # so mounts target that directory, not ~/.claude.  Global instructions and
-    # skills are read-only; the per-project state (memory, transcripts) is
-    # read-write so container sessions persist to the host.  Claude Code keys
-    # project state by the working directory with every non-alphanumeric
-    # character replaced by "-"; map the host state to this run's distinct
-    # container working directory.  Use the physical path on both sides:
-    # host Claude Code keys by process.cwd(), which resolves symlinks, and
-    # the container workspace identity above is physical too.
+    # container (CLAUDE_CONFIG_DIR=/home/user/.claude).  Global instructions
+    # and skills are read-only; do not use it with an agent-config clone
+    # installed in the container, whose links these mounts would shadow.
+    # --share-memory (implied by --share-claude): mount only the current
+    # project's state directory (memory, transcripts) read-write so container
+    # sessions persist to the host; safe alongside an agent-config clone.
+    # Claude Code keys project state by the working directory with every
+    # non-alphanumeric character replaced by "-"; map the host state to this
+    # run's distinct container working directory.  Use the physical path on
+    # both sides: host Claude Code keys by process.cwd(), which resolves
+    # symlinks, and the container workspace identity above is physical too.
+    _host_claude="$HOME/.claude"
+    _cfg=/home/user/.claude
     if [ "$share_claude" = true ]; then
-      _host_claude="$HOME/.claude"
-      _cfg=/home/user/.config/claude
+      share_memory=true
       if [ -f "$_host_claude/CLAUDE.md" ]; then
         volume_flags+=("-v" "$_host_claude/CLAUDE.md:$_cfg/CLAUDE.md:ro")
       fi
       if [ -d "$_host_claude/skills" ]; then
         volume_flags+=("-v" "$_host_claude/skills:$_cfg/skills:ro")
       fi
+    fi
+    if [ "$share_memory" = true ]; then
       _proj="$_host_claude/projects/''${host_workdir//[^a-zA-Z0-9]/-}"
       mkdir -p "$_proj"
       _container_proj="''${container_workdir//[^a-zA-Z0-9]/-}"

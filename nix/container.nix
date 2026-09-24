@@ -40,7 +40,7 @@ pkgs.dockerTools.buildLayeredImage {
       "XDG_CACHE_HOME=${home}/.cache"
       "NIX_CONF_DIR=/etc/nix"
       "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-      "CLAUDE_CONFIG_DIR=${home}/.config/claude"
+      "CLAUDE_CONFIG_DIR=${home}/.claude"
       # XDG overrides for tools that don't respect it natively
       "HISTFILE=${home}/.local/state/bash/history"
       "PYTHON_HISTORY=${home}/.local/state/python/history"

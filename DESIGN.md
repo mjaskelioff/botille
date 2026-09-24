@@ -53,7 +53,7 @@ Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Op
 - Codex state and file-based credentials at `/home/user/.codex`
 - The launcher uses the first 16 hex digits of the physical host path's SHA-256 digest and a sanitized basename (at most 48 characters) for the working directory.  It sets both Podman's working directory and `BOTILLE_WORKDIR` to that path.  Different checkouts retain distinct path-based trust and session state while sharing the home volume.
 - The entrypoint uses `BOTILLE_WORKDIR` for direnv and Claude onboarding defaults.  Direct image runs fall back to `/work`.
-- Claude config dir at `/home/user/.config/claude` (set via `CLAUDE_CONFIG_DIR` env var)
+- Claude config dir at `/home/user/.claude` (set via `CLAUDE_CONFIG_DIR` env var)
 - XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`) all under `/home/user`
 - First run: user authenticates inside the container
 - Subsequent runs: credentials, shell history, and tool configs already present in the volume

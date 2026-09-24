@@ -15,6 +15,13 @@ let
     # model = "claude-opus-4-7";
     # effortLevel = "high";
     teammateMode = "auto";
+    # No AI attribution on commits or PRs made inside the sandbox; the
+    # host settings.json carrying the same keys is not shared in.
+    attribution = {
+      commit = "";
+      pr = "";
+      sessionUrl = false;
+    };
     env = {
       # CLAUDE_CODE_EFFORT_LEVEL = "max";
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "true";
@@ -47,10 +54,10 @@ let
         "Bash(* /home/user/.netrc*)"
         "Bash(* /home/user/.git-credentials*)"
         "Bash(* /home/user/.config/gh*)"
-        "Bash(* /home/user/.config/claude/.credentials*)"
+        "Bash(* /home/user/.claude/.credentials*)"
         "Bash(* /home/user/.config/git/credentials*)"
         "Bash(* /home/user/.config/pi/auth.json*)"
-        "Read(/home/user/.config/claude/.credentials*)"
+        "Read(/home/user/.claude/.credentials*)"
         "Read(/home/user/.ssh/**)"
         "Read(/home/user/.config/gnupg/**)"
         "Read(/home/user/.netrc)"
@@ -282,7 +289,7 @@ in
   # concurrently launching container cannot discard this write, nor the
   # other way around.
   home.activation.claudeSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    settings="$HOME/.config/claude/settings.json"
+    settings="$HOME/.claude/settings.json"
     base=${lib.escapeShellArg claudeSettings}
     mkdir -p "$(dirname "$settings")"
     (
