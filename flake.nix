@@ -65,7 +65,7 @@
                 config.allowUnfree = true;
               };
 
-          isDarwin = hostPkgs.stdenv.isDarwin;
+          isDarwin = hostPkgs.stdenv.hostPlatform.isDarwin;
 
           home = "/home/user";
 
@@ -210,7 +210,7 @@
               touch $out
             '';
           }
-          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.isLinux { inherit (tests) ai-tools; };
+          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.hostPlatform.isLinux { inherit (tests) ai-tools; };
 
           formatter = hostPkgs.nixfmt;
         };
