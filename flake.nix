@@ -199,6 +199,7 @@
           apps.default = built.app;
 
           checks = {
+            inherit (tests) launcher-args;
             statix = hostPkgs.runCommand "statix" { nativeBuildInputs = [ hostPkgs.statix ]; } ''
               statix check ${inputs.self}
               touch $out
@@ -209,7 +210,7 @@
               touch $out
             '';
           }
-          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.isLinux tests;
+          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.isLinux { inherit (tests) ai-tools; };
 
           formatter = hostPkgs.nixfmt;
         };

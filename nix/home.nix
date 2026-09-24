@@ -278,21 +278,35 @@ in
   # Claude Code can modify it at runtime (e.g. to add MCP servers).
   # On home-manager activation, the existing file is deep-merged with the
   # Nix-managed base — Nix keys win, runtime-added keys are preserved.
+  # The lock is shared with the entrypoint's project-entry merge so a
+  # concurrently launching container cannot discard this write, nor the
+  # other way around.
   home.activation.claudeSettings = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     settings="$HOME/.config/claude/settings.json"
     base=${lib.escapeShellArg claudeSettings}
     mkdir -p "$(dirname "$settings")"
-    if [ -L "$settings" ]; then
-      # First run after migration: replace the home-manager symlink
-      rm "$settings"
-      echo "$base" | ${pkgs.jq}/bin/jq . > "$settings"
-    elif [ -f "$settings" ]; then
-      # Merge: existing file is the base, Nix-managed keys win via deep merge
-      ${pkgs.jq}/bin/jq -s '.[0] * .[1]' "$settings" <(echo "$base") > "$settings.tmp"
-      mv "$settings.tmp" "$settings"
-    else
-      echo "$base" | ${pkgs.jq}/bin/jq . > "$settings"
-    fi
+    (
+      ${pkgs.util-linux}/bin/flock 9
+      if [ -L "$settings" ]; then
+        # First run after migration: replace the home-manager symlink
+        rm "$settings"
+        echo "$base" | ${pkgs.jq}/bin/jq . > "$settings"
+      elif [ -f "$settings" ]; then
+        # Merge: existing file is the base, Nix-managed keys win via deep
+        # merge.  A malformed existing file (interrupted write) must not
+        # fail activation, which would keep every container from starting,
+        # so fall back to the Nix-managed base.
+        if ${pkgs.jq}/bin/jq -s '.[0] * .[1]' "$settings" <(echo "$base") > "$settings.tmp"; then
+          mv "$settings.tmp" "$settings"
+        else
+          rm -f "$settings.tmp"
+          echo "claudeSettings: $settings is not valid JSON; resetting to the Nix-managed base" >&2
+          echo "$base" | ${pkgs.jq}/bin/jq . > "$settings"
+        fi
+      else
+        echo "$base" | ${pkgs.jq}/bin/jq . > "$settings"
+      fi
+    ) 9>"$settings.lock"
   '';
 
   programs = {

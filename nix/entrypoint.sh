@@ -87,13 +87,40 @@ if ! [ -f "$hm_marker" ] || [ "$(<"$hm_marker")" != "$hm_generation" ]; then
   if [ -e "$prof/manifest.json" ]; then
     rm -f "$prof" "$prof"-*-link
   fi
-  "$hm_generation/activate"
+  "$hm_generation/activate" >&2
   mkdir -p "$(dirname "$hm_marker")"
   printf '%s' "$hm_generation" > "$hm_marker"
 fi
 
+# --- Preserve Claude's existing onboarding defaults at each project path ---
+workdir="${BOTILLE_WORKDIR:-/work}"
+claude_settings="${CLAUDE_CONFIG_DIR:-$HOME/.config/claude}/settings.json"
+if [ -f "$claude_settings" ]; then
+  # Concurrent launches must not discard one another's project entries.
+  # home-manager's claudeSettings activation takes the same lock.
+  (
+    flock 9
+    settings_tmp=$(mktemp "$claude_settings.XXXXXX")
+    trap 'rm -f "$settings_tmp"' EXIT
+    # A malformed settings.json (interrupted write) must not abort the
+    # entrypoint: skip the merge and keep the container usable.
+    if jq --arg project "$workdir" '
+      .projects[$project] = ({
+        allowedTools: [],
+        hasTrustDialogAccepted: true,
+        hasCompletedOnboarding: true,
+        hasTrustDialogHooksAccepted: true
+      } * (.projects[$project] // {}))
+    ' "$claude_settings" > "$settings_tmp"; then
+      mv "$settings_tmp" "$claude_settings"
+    else
+      echo "botille: $claude_settings is not valid JSON; skipping onboarding merge" >&2
+    fi
+  ) 9>"$claude_settings.lock"
+fi
+
 # --- Ensure directories exist (tool-specific, not managed by home-manager) ---
-mkdir -p /work \
+mkdir -p "$workdir" \
   "@home@/.local/state/bash" \
   "@home@/.local/state/python" \
   "@home@/.local/state/node" \
@@ -106,9 +133,16 @@ mkdir -p /work \
   "@home@/.local/state/botille"
 
 # --- Opt-in: enter direnv dev shell before running the command ---
-if [ "${BOTILLE_DEVSHELL:-}" = "1" ] && [ -f /work/.envrc ]; then
-  direnv allow /work
-  exec direnv exec /work "$@"
+if [ "${BOTILLE_DEVSHELL:-}" = "1" ] && [ -f "$workdir/.envrc" ]; then
+  direnv allow "$workdir"
+  set -- direnv exec "$workdir" "$@"
 fi
 
-exec "$@"
+# SYS_ADMIN is needed for the startup bind mount, not for the command.
+# Bubblewrap refuses to run with inherited capabilities in a non-setuid
+# process.  Clearing this capability also prevents agents from retaining
+# the entrypoint's mount privileges; other configured capabilities remain
+# in the ambient set on purpose (the workload asked for them), at the cost
+# of re-breaking bubblewrap sandboxes; see the capabilities option in
+# nix/container-options.nix.
+exec setpriv --inh-caps=-sys_admin --ambient-caps=-sys_admin "$@"

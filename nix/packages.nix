@@ -40,6 +40,7 @@ in
   # AI agents
   llmAgentsPkgs.claude-code
   claude-yolo
+  llmAgentsPkgs.codex
   gemini-cli
   llmAgentsPkgs.copilot-cli
   llmAgentsPkgs.opencode

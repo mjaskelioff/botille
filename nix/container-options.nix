@@ -69,6 +69,13 @@ in
       default = { };
       description = ''
         Capabilities to configure. true = --cap-add, false = --cap-drop, null = default.
+
+        The container user is non-root, so an added capability reaches
+        commands through the ambient set.  Bubblewrap refuses to start a
+        non-setuid process with any inherited or ambient capability, so
+        adding a capability beyond SYS_ADMIN (which the entrypoint clears
+        after its startup bind mount) breaks bubblewrap-based sandboxes,
+        including `codex sandbox`.
       '';
     };
 
@@ -118,6 +125,7 @@ in
     ];
 
     capabilities = {
+      # The entrypoint clears SYS_ADMIN before starting the command.
       SYS_ADMIN = mkDefault true;
       NET_ADMIN = mkDefault false;
       NET_RAW = mkDefault false;

@@ -2,29 +2,28 @@
 
 ## Goal
 
-Run AI coding agents (Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi) inside a Nix-built container using rootless Podman, with the current working directory mounted at `/work`. Invoked purely through `nix run` — no separate binary to install.
+Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi) inside a Nix-built container using rootless Podman, with the current working directory mounted at a stable `/work/<name>-<hash>` path.  Invoked purely through `nix run` — no separate binary to install.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Host (unprivileged user)                       │
-│                                                 │
-│  $ nix run 'delirium-systems/botille'                  │
-│       │                                         │
-│       ▼                                         │
-│  rootless podman run ...                        │
-│  ┌─────────────────────────────────────────┐    │
-│  │  Container (Nix-built OCI image)        │    │
-│  │                                         │    │
-│  │  /work         ← bind mount (cwd)      │    │
-│  │  /home/user    ← named volume          │    │
-│  │  /nix          ← overlay (named vol)   │    │
-│  │                                         │    │
-│  │  nix, claude, gemini, copilot, opencode, pi, git …             │    │
-│  │                                         │    │
-│  └─────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────┘
++--------------------------------------------------------+
+| Host (unprivileged user)                               |
+|                                                        |
+| $ nix run 'github:delirium-systems/botille' -- codex   |
+| |                                                      |
+| rootless podman run ...                                |
+| +--------------------------------------------------+   |
+| | Container (Nix-built OCI image)                  |   |
+| |                                                  |   |
+| | /work/<name>-<hash>  <- project bind mount       |   |
+| | /home/user          <- persistent home volume    |   |
+| | /nix                <- bind from Nix volume      |   |
+| |                                                  |   |
+| | claude, codex, gemini, copilot, opencode, pi     |   |
+| | nix, git, development tools                      |   |
+| +--------------------------------------------------+   |
++--------------------------------------------------------+
 ```
 
 ## Core Components
@@ -37,7 +36,7 @@ Run AI coding agents (Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi)
 
 ### 2. Container Image (Nix-built)
 - Built with `pkgs.dockerTools.buildLayeredImage`
-- Contains: Nix, Claude Code, Gemini CLI, Copilot CLI, OpenCode, Pi, bash, git, coreutils, findutils, gnugrep, gnused, gawk, which, less, neovim, iproute2, curl, wget, direnv, nix-direnv, cachix, python3, ripgrep, fd, tree, file, jq, diffutils, unzip, gnutar, gh, openssh, gnupg, nodejs, rsync, tmux, man
+- Contains: Nix, Claude Code, Codex CLI, Gemini CLI, Copilot CLI, OpenCode, Pi, bash, git, coreutils, findutils, gnugrep, gnused, gawk, which, less, neovim, iproute2, curl, wget, direnv, nix-direnv, cachix, python3, ripgrep, fd, tree, file, jq, diffutils, unzip, gnutar, gh, openssh, gnupg, nodejs, rsync, tmux, man
 - Agents sourced from [numtide/llm-agents.nix](https://github.com/numtide/llm-agents.nix) (auto-updated daily)
 - Reproducible — fully defined in the Nix flake (`flake.nix` + `nix/` modules)
 
@@ -46,10 +45,14 @@ Run AI coding agents (Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi)
 - On first run, the entrypoint copies the image's `/nix` to the volume (`cp --reflink=auto` for instant clones on CoW filesystems), then bind-mounts the volume copy over `/nix`
 - On image update, new store paths are merged alongside existing ones (non-destructive); the Nix DB is reset and reloaded from the new image closure
 - Entrypoint runs `nix-store --load-db` to register all image store paths and pins a GC root so they survive garbage collection
+- Before starting the command or devshell, the entrypoint clears inherited and ambient `CAP_SYS_ADMIN`.  This capability is needed for the startup bind mount, but conflicts with Codex's Bubblewrap sandbox.  Other explicitly configured capabilities are preserved.
 - Subsequent runs reuse the volume — `nix-env`, `nix shell`, etc. persist installed packages
 
 ### 4. Home Directory Persistence
 - A named Podman volume (`botille-home`) mounted at `/home/user`
+- Codex state and file-based credentials at `/home/user/.codex`
+- The launcher uses the first 16 hex digits of the physical host path's SHA-256 digest and a sanitized basename (at most 48 characters) for the working directory.  It sets both Podman's working directory and `BOTILLE_WORKDIR` to that path.  Different checkouts retain distinct path-based trust and session state while sharing the home volume.
+- The entrypoint uses `BOTILLE_WORKDIR` for direnv and Claude onboarding defaults.  Direct image runs fall back to `/work`.
 - Claude config dir at `/home/user/.config/claude` (set via `CLAUDE_CONFIG_DIR` env var)
 - XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`) all under `/home/user`
 - First run: user authenticates inside the container
@@ -86,8 +89,8 @@ The host service **must** bind to `127.0.0.1`, not `0.0.0.0` — the container f
 
 ### 6. Guardrails
 - Rootless Podman — no daemon, no root privileges, runs entirely as the calling user
-- `/work` is read-write by default
-- No access to host filesystem outside `/work`
+- The selected `/work/<name>-<hash>` directory is read-write by default
+- The project mount exposes only the selected host directory; explicit extra mounts can expose more
 - LAN blocked, internet allowed
 
 ## Interface
@@ -96,7 +99,7 @@ The host service **must** bind to `127.0.0.1`, not `0.0.0.0` — the container f
 # Drop into a containerized shell with claude available
 nix run 'delirium-systems/botille'
 
-# All args after -- are passed as the container command (replacing default /bin/bash)
+# Botille options precede the command; remaining args go to that command
 nix run 'delirium-systems/botille' -- claude
 
 # Allow TCP to specific ports on the host (e.g. llama.cpp, ollama)
@@ -138,7 +141,7 @@ A Mac cannot build Linux derivations, so the image must be substituted from the 
 
 - **Everything is Nix** — flake app, container image, no separate build tool
 - **Container runtime:** Rootless Podman (no Docker daemon, no root required)
-- **Agents:** Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi — all from [numtide/llm-agents.nix](https://github.com/numtide/llm-agents.nix)
+- **Agents:** Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi — all from [numtide/llm-agents.nix](https://github.com/numtide/llm-agents.nix)
 - **Nix inside container:** allows user/agent to install additional tools on the fly
 
 ## Nix Flake Structure
@@ -158,7 +161,7 @@ flake.nix                 → thin orchestrator wiring modules together
 │
 ├── packages.container    → OCI image
 ├── apps.default          → launcher shell script
-├── checks                → statix, deadnix, ai-tools (NixOS VM test)
+├── checks                → statix, deadnix, launcher-args, ai-tools (NixOS VM test)
 └── formatter             → nixfmt
 ```
 
@@ -168,23 +171,23 @@ flake.nix                 → thin orchestrator wiring modules together
 2. Nix builds the launcher script (which depends on the container image, so both are built/cached)
 3. Script checks if the current image (by Nix store path) is already loaded; if not, removes the old image and loads the new one
 4. Script runs container with:
-   - `$PWD` → `/work` bind mount
+   - Physical host `$PWD` → `/work/<name>-<hash>` bind mount
    - `botille-home` volume → `/home/user`
    - `botille-nix` volume → `/var/nix-store` (bind-mounted over `/nix` by entrypoint)
    - `--userns=keep-id` to map host UID into container
    - `--network pasta:--map-gw,...` with custom subnet (10.171.0.0/24)
-   - Interactive TTY attached (`-it`)
+   - Standard input attached (`-i`); a TTY is added (`-t`) when both stdin and stdout are terminals
 5. OCI `createContainer` hook fires, applying iptables REJECT rules for all private ranges using host-side binaries
 6. Podman drops `CAP_NET_ADMIN`/`NET_RAW` and starts the container process
 6b. OCI `poststart` hooks fire: ACCEPT rule for the container's own IP (enables pasta port forwarding), and if `--host-port` was used, ACCEPT rules for the gateway on those TCP ports
 7. Entrypoint registers image store paths in the Nix DB and pins a GC root
-8. User lands in a shell with `claude`, `gemini`, `copilot`, `opencode`, `pi`, `nix`, `git` on `$PATH`, working dir `/work`
+8. User lands in a shell with `claude`, `codex`, `gemini`, `copilot`, `opencode`, `pi`, `nix`, `git` on `$PATH`, working dir `/work/<name>-<hash>`
 8. On exit, file changes persist in host `cwd`; home directory and nix store persist in volumes
 
 ## Volume Layout
 
 | Mount             | Source                          | Purpose                              |
 |-------------------|---------------------------------|--------------------------------------|
-| `/work`           | bind: host `$PWD`              | Project files                        |
+| `/work/<name>-<hash>` | bind: physical host `$PWD`              | Project files                        |
 | `/home/user`      | volume: `botille-home`         | Credentials, configs, XDG dirs       |
 | `/nix`            | bind mount from `botille-nix` volume | Nix store (copied from image, persists installs) |

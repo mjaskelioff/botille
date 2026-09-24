@@ -52,4 +52,5 @@ jobs:
           nix build --print-build-logs \
             .#packages.aarch64-linux.container \
             .#checks.aarch64-linux.statix \
-            .#checks.aarch64-linux.deadnix
+            .#checks.aarch64-linux.deadnix \
+            .#checks.aarch64-linux.launcher-args

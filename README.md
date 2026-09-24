@@ -12,7 +12,7 @@ Run coding agents inside a sandboxed, LAN-isolated rootless Podman container. Ev
 
 ## 🔒 What it does
 
-- 📦 Builds a reproducible OCI container image with Claude Code, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi, Nix, git, and common dev tools
+- 📦 Builds a reproducible OCI container image with Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi, Nix, git, and common dev tools
 - 🌐 Blocks all LAN/private network access via iptables OCI hooks — only public internet allowed
 - 🔑 Persists credentials and Nix store across runs via named Podman volumes
 - 🧑 Runs rootless — no daemon, no root, your UID mapped into the container
@@ -25,6 +25,9 @@ nix run 'github:delirium-systems/botille'
 
 # Pass a command to run inside the container (replaces default /bin/bash)
 nix run 'github:delirium-systems/botille' -- claude
+
+# Run Codex
+nix run 'github:delirium-systems/botille' -- codex
 
 # Allow access to a service on the host (e.g. llama.cpp, ollama)
 # The host service must bind to 127.0.0.1, not 0.0.0.0
@@ -48,7 +51,11 @@ nix run 'github:delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
 nix run 'github:delirium-systems/botille' -- --share-claude claude
 ```
 
-Your current directory is mounted at `/work` inside the container. File changes persist on the host; credentials and installed packages persist in Podman volumes.
+Your current directory is mounted at `/work/<name>-<hash>` inside the container.  The name comes from the directory basename, and the hash comes from its physical absolute host path.  Repeated launches and symlink aliases use the same container path; directories with the same name at different host paths use different container paths.  File changes persist on the host.  Credentials and installed packages persist in Podman volumes.
+
+Put Botille options before the container command.  Once the command starts, its arguments pass through unchanged: `botille --port 3000:3000 codex -p review` publishes a port and selects the Codex profile named `review`.  An explicit `--` also ends Botille option parsing.
+
+Moving or renaming a host directory gives it a new container path.  Saved sessions from the previous `/work` layout remain in the home volume, but do not automatically become sessions for the new path.  No existing transcripts are rewritten or reassigned to a project.
 
 Pre-built binaries are available from the `delirium-systems` cachix cache — the flake configures this automatically when `accept-flake-config = true` is set in your Nix config.
 
@@ -58,7 +65,7 @@ Pre-built binaries are available from the `delirium-systems` cachix cache — th
 alias botille="nix run 'github:delirium-systems/botille' --"
 ```
 
-Then: `botille`, `botille claude`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`.
+Then: `botille`, `botille claude`, `botille codex`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`.
 
 ### Sharing your host Claude config
 
@@ -66,9 +73,35 @@ Then: `botille`, `botille claude`, `botille --host-port 8080`, `botille --allow-
 
 Inside the container, `claude-yolo` is a shell alias for `claude --dangerously-skip-permissions` — it runs Claude Code with no permission prompts.
 
+### Codex
+
+Authenticate once from a project directory:
+
+```sh
+botille codex -c 'cli_auth_credentials_store="file"' login --device-auth
+botille codex
+```
+
+Enable device-code login in your ChatGPT account or workspace if required.  Open the displayed link in your host browser and enter the code.  This flow does not need an inbound callback port.  Codex stores its file-based credentials and local state under `/home/user/.codex`, inside `botille-home`.  Keep the credential store set to `file` if you customize Codex configuration.  See the [Codex authentication documentation](https://learn.chatgpt.com/docs/auth).
+
+Each project has a distinct working directory, so Codex can distinguish saved sessions and project trust while sharing the container's login.  Codex retains its normal sandbox and approval behavior.  Its packaged `bubblewrap` provides the inner Linux sandbox, including on macOS through the Podman VM.  The entrypoint releases its startup mount capability before running commands so it does not conflict with Bubblewrap.
+
+For scripted use, stdin passes through and Botille startup messages go to stderr:
+
+```sh
+cat prompt.txt | botille codex exec -
+botille codex exec --json "Summarize this repository" > result.jsonl
+```
+
 ### API keys
 
-Authenticate interactively inside the container on first run — credentials persist in the `botille-home` volume. Alternatively, pass keys via environment variables by editing the launcher or using `podman run -e` directly.
+Authenticate inside the container on first run.  Credentials persist in the `botille-home` volume.  For Codex API-key login, pass the host key through stdin:
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | botille codex -c 'cli_auth_credentials_store="file"' login --with-api-key
+```
+
+Keep keys out of declarative Nix configuration, which becomes readable Nix store content.
 
 ### Customisation
 
@@ -139,13 +172,13 @@ On macOS, Podman runs Linux containers inside a lightweight VM (`podman machine`
 1. **Launcher** checks if the current container image is already loaded in Podman; reloads only when the Nix store path changes
 2. **OCI hooks** apply iptables rules in two stages: REJECT rules blocking RFC1918, CGNAT, and link-local ranges at `createContainer` (before the process starts), then an ACCEPT rule for the container's own IP at `poststart` (so pasta can forward exposed ports). `CAP_NET_ADMIN`/`CAP_NET_RAW` are dropped so rules are immutable from inside
 3. **Entrypoint** copies the image's Nix store to a persistent volume (first run only), registers store paths in the Nix DB, pins a GC root, and runs home-manager activation
-4. **Container starts** with your `$PWD` at `/work`, tools on `$PATH`, DNS forced to 1.1.1.1/1.0.0.1
+4. **Container starts** with your project at `/work/<name>-<hash>`, tools on `$PATH`, DNS forced to 1.1.1.1/1.0.0.1
 
 ### Volumes
 
 | Mount | Podman volume | Purpose |
 |---|---|---|
-| `/work` | bind: host `$PWD` | Project files (read-write) |
+| `/work/<name>-<hash>` | bind: physical host `$PWD` | Project files (read-write) |
 | `/home/user` | `botille-home` | Credentials, configs, shell history |
 | `/var/nix-store` | `botille-nix` | Nix store (persists `nix shell`/`nix-env` installs) |
 

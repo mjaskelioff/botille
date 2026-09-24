@@ -23,6 +23,19 @@ pkgs.writeShellApplication {
   # podman machine's server version, and the machine is managed outside Nix.
   runtimeInputs = optionals (!isDarwin) [ pkgs.podman ];
   text = ''
+    # Use the physical host path so symlink aliases share a workspace.
+    # The digest distinguishes checkouts with the same directory name.
+    host_workdir=$(pwd -P)
+    if command -v sha256sum >/dev/null 2>&1; then
+      work_hash=$(printf '%s' "$host_workdir" | sha256sum)
+    else
+      work_hash=$(printf '%s' "$host_workdir" | shasum -a 256)
+    fi
+    work_name="''${host_workdir##*/}"
+    work_name="''${work_name//[^a-zA-Z0-9_-]/-}"
+    work_name="''${work_name:0:48}"
+    container_workdir="/work/''${work_name:-project}-''${work_hash:0:16}"
+
     ${optionalString isDarwin ''
       if ! command -v podman >/dev/null 2>&1; then
         echo "botille: podman not found — install it (e.g. brew install podman), then: podman machine init && podman machine start" >&2
@@ -34,84 +47,18 @@ pkgs.writeShellApplication {
         echo "botille: run: podman machine start (or podman machine init first)" >&2
         exit 1
       fi
-      case "$PWD" in
+      # Test the physical path: it is what gets bind-mounted below, and a
+      # symlink under /Users may resolve to an unshared location.
+      case "$host_workdir" in
         /Users/* | /private/* | /tmp/* | /var/folders/* | /Volumes/*) ;;
         *)
-          echo "botille: warning: $PWD is outside the podman machine's default shared directories (/Users, /private, /tmp, /var/folders, /Volumes); the /work mount may appear empty" >&2
+          echo "botille: warning: $host_workdir is outside the podman machine's default shared directories (/Users, /private, /tmp, /var/folders, /Volumes); the project mount may appear empty" >&2
           ;;
       esac
     ''}
-    image="botille:latest"
-    marker_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/botille"
-    marker_file="$marker_dir/loaded-image"
-    nix_store_path="${container}"
-
-    # Only check podman when the marker file is missing or stale —
-    # avoids a ~1-2s podman image exists call on the hot path.
-    if ! [ -f "$marker_file" ] || [ "$(<"$marker_file")" != "$nix_store_path" ]; then
-      echo "botille: loading image from $nix_store_path" >&2
-      podman rmi "$image" 2>/dev/null || true
-      podman load < "$nix_store_path"
-      mkdir -p "$marker_dir"
-      printf '%s' "$nix_store_path" > "$marker_file"
-      echo "botille: image loaded" >&2
-    else
-      echo "botille: image up to date" >&2
-    fi
-
-    tty_flag=""
-    if [ -t 0 ]; then
-      tty_flag="-it"
-    fi
-    # Forward host terminal identity so CLI tools (claude, delta, etc.)
-    # can detect the real emulator and enable full colour/highlighting.
-    term_env=""
-    for _var in \
-      TERM_PROGRAM TERM_PROGRAM_VERSION \
-      KITTY_WINDOW_ID KITTY_PID \
-      ALACRITTY_LOG ALACRITTY_SOCKET \
-      WT_SESSION \
-      KONSOLE_VERSION \
-      GNOME_TERMINAL_SERVICE \
-      VTE_VERSION \
-      XTERM_VERSION \
-      TERMINATOR_UUID \
-      TILIX_ID \
-    ; do
-      eval "_val=\''${!_var:-}"
-      if [ -n "$_val" ]; then
-        term_env="$term_env -e $_var=$_val"
-      fi
-    done
-
-    # Forward host timezone
-    tz_env=""
-    if [ -n "''${TZ:-}" ]; then
-      tz_env="-e TZ=$TZ"
-    fi
-    tz_mount=""
-    ${
-      if isDarwin then
-        # Bind sources resolve inside the podman machine VM, so mounting
-        # /etc/localtime would pick up the VM's clock; derive TZ from the
-        # Mac's /etc/localtime symlink instead.
-        ''
-          if [ -z "$tz_env" ]; then
-            _lt=$(readlink /etc/localtime 2>/dev/null || true)
-            case "$_lt" in
-              *zoneinfo/*) tz_env="-e TZ=''${_lt#*zoneinfo/}" ;;
-            esac
-          fi
-        ''
-      else
-        ''
-          if [ -f /etc/localtime ]; then
-            tz_mount="-v /etc/localtime:/etc/localtime:ro"
-          fi
-        ''
-    }
-
-    # Runtime flags — these layer on top of the declarative config
+    # Runtime flags — these layer on top of the declarative config.
+    # Parse before touching podman so a bad flag fails fast, without
+    # first removing and reloading the image.
     allow_lan=${allowLanInit}
     devshell=false
     share_claude=false
@@ -178,12 +125,88 @@ pkgs.writeShellApplication {
           host_ports+=("$_hp")
           shift
           ;;
-        *)
-          container_args+=("$1")
+        --)
           shift
+          container_args=("$@")
+          break
+          ;;
+        *)
+          container_args=("$@")
+          break
           ;;
       esac
     done
+
+    image="botille:latest"
+    marker_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/botille"
+    marker_file="$marker_dir/loaded-image"
+    nix_store_path="${container}"
+
+    # Only check podman when the marker file is missing or stale —
+    # avoids a ~1-2s podman image exists call on the hot path.
+    if ! [ -f "$marker_file" ] || [ "$(<"$marker_file")" != "$nix_store_path" ]; then
+      echo "botille: loading image from $nix_store_path" >&2
+      podman rmi "$image" >/dev/null 2>&1 || true
+      podman load < "$nix_store_path" >&2
+      mkdir -p "$marker_dir"
+      printf '%s' "$nix_store_path" > "$marker_file"
+      echo "botille: image loaded" >&2
+    else
+      echo "botille: image up to date" >&2
+    fi
+
+    tty_flags=(-i)
+    if [ -t 0 ] && [ -t 1 ]; then
+      tty_flags+=(-t)
+    fi
+    # Forward host terminal identity so CLI tools (claude, delta, etc.)
+    # can detect the real emulator and enable full colour/highlighting.
+    term_env=""
+    for _var in \
+      TERM_PROGRAM TERM_PROGRAM_VERSION \
+      KITTY_WINDOW_ID KITTY_PID \
+      ALACRITTY_LOG ALACRITTY_SOCKET \
+      WT_SESSION \
+      KONSOLE_VERSION \
+      GNOME_TERMINAL_SERVICE \
+      VTE_VERSION \
+      XTERM_VERSION \
+      TERMINATOR_UUID \
+      TILIX_ID \
+    ; do
+      eval "_val=\''${!_var:-}"
+      if [ -n "$_val" ]; then
+        term_env="$term_env -e $_var=$_val"
+      fi
+    done
+
+    # Forward host timezone
+    tz_env=""
+    if [ -n "''${TZ:-}" ]; then
+      tz_env="-e TZ=$TZ"
+    fi
+    tz_mount=""
+    ${
+      if isDarwin then
+        # Bind sources resolve inside the podman machine VM, so mounting
+        # /etc/localtime would pick up the VM's clock; derive TZ from the
+        # Mac's /etc/localtime symlink instead.
+        ''
+          if [ -z "$tz_env" ]; then
+            _lt=$(readlink /etc/localtime 2>/dev/null || true)
+            case "$_lt" in
+              *zoneinfo/*) tz_env="-e TZ=''${_lt#*zoneinfo/}" ;;
+            esac
+          fi
+        ''
+      else
+        ''
+          if [ -f /etc/localtime ]; then
+            tz_mount="-v /etc/localtime:/etc/localtime:ro"
+          fi
+        ''
+    }
+
     ${
       if isDarwin then
         ''
@@ -220,8 +243,10 @@ pkgs.writeShellApplication {
     # skills are read-only; the per-project state (memory, transcripts) is
     # read-write so container sessions persist to the host.  Claude Code keys
     # project state by the working directory with every non-alphanumeric
-    # character replaced by "-"; inside the container the project is always
-    # /work, hence the fixed "-work" destination.
+    # character replaced by "-"; map the host state to this run's distinct
+    # container working directory.  Use the physical path on both sides:
+    # host Claude Code keys by process.cwd(), which resolves symlinks, and
+    # the container workspace identity above is physical too.
     if [ "$share_claude" = true ]; then
       _host_claude="$HOME/.claude"
       _cfg=/home/user/.config/claude
@@ -231,9 +256,10 @@ pkgs.writeShellApplication {
       if [ -d "$_host_claude/skills" ]; then
         volume_flags+=("-v" "$_host_claude/skills:$_cfg/skills:ro")
       fi
-      _proj="$_host_claude/projects/''${PWD//[^a-zA-Z0-9]/-}"
+      _proj="$_host_claude/projects/''${host_workdir//[^a-zA-Z0-9]/-}"
       mkdir -p "$_proj"
-      volume_flags+=("-v" "$_proj:$_cfg/projects/-work")
+      _container_proj="''${container_workdir//[^a-zA-Z0-9]/-}"
+      volume_flags+=("-v" "$_proj:$_cfg/projects/$_container_proj")
     fi
 
     cidfile=$(mktemp -u "/tmp/botille-cid.XXXXXX")
@@ -249,7 +275,7 @@ pkgs.writeShellApplication {
     # shellcheck disable=SC2086
     podman ${hooksFlag} run \
       ${staticFlags} \
-      $tty_flag \
+      "''${tty_flags[@]}" \
       $lan_annotation \
       $host_port_annotation \
       $term_env \
@@ -260,7 +286,9 @@ pkgs.writeShellApplication {
       "''${volume_flags[@]}" \
       --detach-keys="" \
       --cidfile "$cidfile" \
-      -v "$PWD:/work" \
+      -e "BOTILLE_WORKDIR=$container_workdir" \
+      -w "$container_workdir" \
+      -v "$host_workdir:$container_workdir" \
       "$image" "''${container_args[@]}"
   '';
 }
