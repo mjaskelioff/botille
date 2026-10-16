@@ -1,7 +1,5 @@
 {
   pkgs,
-  imageClosureInfo,
-  closureInfoReg,
   home,
   hmActivation,
 }:
@@ -10,10 +8,13 @@ pkgs.replaceVarsWith {
   isExecutable = true;
   replacements = {
     inherit
-      imageClosureInfo
-      closureInfoReg
       home
       hmActivation
       ;
+    initStore = pkgs.replaceVarsWith {
+      src = ./init-store.sh;
+      isExecutable = true;
+      replacements = { };
+    };
   };
 }

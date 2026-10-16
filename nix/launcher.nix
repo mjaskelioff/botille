@@ -5,6 +5,7 @@
   podmanFlags,
   hostPorts ? [ ],
   allowLan ? false,
+  image ? "botille:${container.imageTag}",
 }:
 let
   inherit (pkgs.lib) optionals optionalString;
@@ -57,7 +58,7 @@ pkgs.writeShellApplication {
       esac
     ''}
     # Runtime flags — these layer on top of the declarative config.
-    # Parse before touching podman so a bad flag fails fast, without
+    # Parse before loading the image so a bad flag fails fast, without
     # first removing and reloading the image.
     allow_lan=${allowLanInit}
     devshell=false
@@ -142,19 +143,17 @@ pkgs.writeShellApplication {
       esac
     done
 
-    image="botille:latest"
-    marker_dir="''${XDG_STATE_HOME:-$HOME/.local/state}/botille"
-    marker_file="$marker_dir/loaded-image"
+    image=${pkgs.lib.escapeShellArg image}
     nix_store_path="${container}"
 
-    # Only check podman when the marker file is missing or stale —
-    # avoids a ~1-2s podman image exists call on the hot path.
-    if ! [ -f "$marker_file" ] || [ "$(<"$marker_file")" != "$nix_store_path" ]; then
+    # Query the selected Podman backend, rather than trusting a host-side
+    # marker after a prune, machine reset, or connection change.
+    if ! podman image exists "$image"; then
       echo "botille: loading image from $nix_store_path" >&2
-      podman rmi "$image" >/dev/null 2>&1 || true
-      podman load < "$nix_store_path" >&2
-      mkdir -p "$marker_dir"
-      printf '%s' "$nix_store_path" > "$marker_file"
+      # A concurrent launch may have loaded this immutable tag first.
+      if ! podman load < "$nix_store_path" >&2; then
+        podman image exists "$image" || exit 1
+      fi
       echo "botille: image loaded" >&2
     else
       echo "botille: image up to date" >&2
@@ -294,6 +293,7 @@ pkgs.writeShellApplication {
       $tz_mount \
       "''${port_flags[@]}" \
       "''${volume_flags[@]}" \
+      --pull=never \
       --detach-keys="" \
       --cidfile "$cidfile" \
       -e "BOTILLE_WORKDIR=$container_workdir" \

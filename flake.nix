@@ -18,13 +18,17 @@
     };
   };
 
+  # The flake loader requires a literal set here.  cache-config checks
+  # these entries against nix/caches.nix, also used by the VM builder.
   nixConfig = {
     extra-substituters = [
+      "https://mjaskelioff-botille.cachix.org"
       "https://delirium-systems.cachix.org"
       "https://cache.numtide.com"
       "https://nix-community.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "mjaskelioff-botille.cachix.org-1:7ubt1wsOEkHVa6B85OnxKidmU3dc6YRXa1MrqjVm3Yo="
       "delirium-systems.cachix.org-1:66ovNl3TR96B++WAvUK0U6nmrejRLR3DYoFzQbKnPHs="
       "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
@@ -111,12 +115,24 @@
             ${cacheLines}
           '';
 
-          # Registration info for all image store paths (nix-store --load-db format)
+          fakeNss = pkgs.dockerTools.fakeNss.override {
+            extraPasswdLines = [ "user:x:1000:1000::${home}:/bin/bash" ];
+            extraGroupLines = [ "user:x:1000:" ];
+          };
+
+          # The entrypoint receives the registration paths through the image
+          # environment, so it can itself be included without a dependency cycle.
+          entrypoint = import ./nix/entrypoint.nix {
+            inherit pkgs home hmActivation;
+          };
+
+          # Registration info for the packages and startup scripts in the image.
           imageClosureInfo = pkgs.closureInfo {
             rootPaths = containerPackages ++ [
-              pkgs.dockerTools.fakeNss
+              fakeNss
               nixConf
               hmActivation
+              entrypoint
             ];
           };
 
@@ -128,16 +144,6 @@
             rootPaths = [ imageClosureInfo ];
           };
 
-          entrypoint = import ./nix/entrypoint.nix {
-            inherit
-              pkgs
-              imageClosureInfo
-              closureInfoReg
-              home
-              hmActivation
-              ;
-          };
-
           container = import ./nix/container.nix {
             inherit
               pkgs
@@ -145,6 +151,9 @@
               nixConf
               entrypoint
               home
+              fakeNss
+              imageClosureInfo
+              closureInfoReg
               ;
           };
 
@@ -169,6 +178,7 @@
           app = {
             type = "app";
             program = pkgs.lib.getExe launcher;
+            meta.description = "Run coding agents in a rootless Podman container";
           };
         };
 
@@ -200,6 +210,13 @@
 
           checks = {
             inherit (tests) launcher-args;
+            cache-config =
+              let
+                declared = (import ./flake.nix).nixConfig;
+              in
+              assert declared.extra-substituters == map (cache: cache.url) cacheData.caches;
+              assert declared.extra-trusted-public-keys == map (cache: cache.key) cacheData.caches;
+              hostPkgs.runCommand "botille-cache-config" { } "touch $out";
             statix = hostPkgs.runCommand "statix" { nativeBuildInputs = [ hostPkgs.statix ]; } ''
               statix check ${inputs.self}
               touch $out
@@ -210,46 +227,19 @@
               touch $out
             '';
           }
-          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.hostPlatform.isLinux { inherit (tests) ai-tools; };
+          // hostPkgs.lib.optionalAttrs hostPkgs.stdenv.hostPlatform.isLinux {
+            inherit (tests) ai-tools store-lifecycle;
+          };
 
           formatter = hostPkgs.nixfmt;
         };
 
-      # Flake library - customise the home-manager configuration baked into
-      # the container image without forking this repository.
-      #
-      # Usage: create a wrapper flake.nix in your project:
-      #
-      #   {
-      #     inputs.botille.url = "github:delirium-systems/botille";
-      #     outputs = { self, botille }: {
-      #       apps.x86_64-linux.default = botille.lib.mkApp {
-      #         system = "x86_64-linux";
-      #         extraHomeManagerModules = [
-      #           { programs.git.userEmail = "you@example.com"; }
-      #           ./extra-hm.nix
-      #         ];
-      #         extraContainerModules = [
-      #           { volumes = [ "/tmp/claude-dir:/home/user/.claude/:Z" ]; }
-      #         ];
-      #       };
-      #     };
-      #   }
-      #
-      # Note: customised images are not in the delirium-systems cachix cache
-      # and will be built locally on first use.  `system` may also be a
-      # Darwin system: the image is then built for the matching Linux
-      # architecture and run inside the podman machine VM (on macOS,
-      # customised images must be built with scripts/mac-build-image.sh,
-      # since a Mac cannot build Linux derivations).
+      # mkBotille exposes both the app and its Linux container for wrapper
+      # flakes.  Keep mkApp as the compatible app-only interface.
+      # See README.md for a wrapper that also supports the macOS builder.
       flake.lib = {
-        mkApp =
-          {
-            system,
-            extraHomeManagerModules ? [ ],
-            extraContainerModules ? [ ],
-          }:
-          (mkBotille { inherit system extraHomeManagerModules extraContainerModules; }).app;
+        inherit mkBotille;
+        mkApp = args: (mkBotille args).app;
       };
     };
 }

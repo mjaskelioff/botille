@@ -40,11 +40,14 @@ let
     import ./launcher.nix {
       pkgs = pkgs // {
         stdenv = pkgs.stdenv // {
-          inherit isDarwin;
+          hostPlatform = pkgs.stdenv.hostPlatform // {
+            inherit isDarwin;
+          };
         };
         podman = mockPodman;
       };
       container = pkgs.writeText "mock-botille-image" "";
+      image = "botille:mock-image";
       hooksDir = if isDarwin then null else "/mock/hooks";
       podmanFlags = [ ];
     };
@@ -59,10 +62,25 @@ let
 in
 {
   launcher-args = pkgs.runCommand "botille-launcher-tests" { } ''
-    ${pkgs.python3}/bin/python3 ${./test-launcher.py} ${pkgs.lib.getExe (testLauncher false)} ${mockPodman}/bin
-    ${pkgs.python3}/bin/python3 ${./test-launcher.py} ${pkgs.lib.getExe (testLauncher true)} ${mockPodman}/bin
+    ${pkgs.python3}/bin/python3 ${./test-launcher.py} ${pkgs.lib.getExe (testLauncher false)} ${mockPodman}/bin linux
+    ${pkgs.python3}/bin/python3 ${./test-launcher.py} ${pkgs.lib.getExe (testLauncher true)} ${mockPodman}/bin darwin
     touch $out
   '';
+
+  store-lifecycle =
+    pkgs.runCommand "botille-store-lifecycle-tests"
+      {
+        nativeBuildInputs = [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.util-linux
+          pkgs.nix
+        ];
+      }
+      ''
+        ${pkgs.python3}/bin/python3 ${./test-store.py} ${./init-store.sh}
+        touch $out
+      '';
 
   ai-tools = pkgs.testers.runNixOSTest {
     name = "botille-ai-tools";

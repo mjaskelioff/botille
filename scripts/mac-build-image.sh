@@ -34,14 +34,14 @@ fi
 echo "botille: exporting derivation closure to $cache_dir" >&2
 nix copy --derivation --to "file://$cache_dir" "$drv"
 
-# Cache URLs/keys duplicated from nix/caches.nix — inside the throwaway
-# builder there is no flake evaluation to read them from.
-substituters='https://delirium-systems.cachix.org https://cache.numtide.com https://nix-community.cachix.org'
-trusted_keys='delirium-systems.cachix.org-1:66ovNl3TR96B++WAvUK0U6nmrejRLR3DYoFzQbKnPHs= niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs='
+# Read the same cache list used by the flake and in-container nix.conf.
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+substituters=$(nix eval --raw --file "$script_dir/../nix/caches.nix" urls)
+trusted_keys=$(nix eval --raw --file "$script_dir/../nix/caches.nix" keys)
 
 echo "botille: building $drv in a podman container (first run downloads several GB)" >&2
 podman volume create botille-build >/dev/null 2>&1 || true
-podman run --rm \
+podman run --rm --security-opt=label=disable \
   -v "$cache_dir:/cache" \
   -v botille-build:/nix \
   docker.io/nixos/nix:latest \
