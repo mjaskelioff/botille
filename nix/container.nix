@@ -4,17 +4,17 @@
   nixConf,
   entrypoint,
   home,
+  fakeNss,
+  imageClosureInfo,
+  closureInfoReg,
 }:
 pkgs.dockerTools.buildLayeredImage {
   name = "botille";
-  tag = "latest";
+  # dockerTools derives an immutable tag from the image configuration.
   maxLayers = 2;
 
   contents = containerPackages ++ [
-    (pkgs.dockerTools.fakeNss.override {
-      extraPasswdLines = [ "user:x:1000:1000::${home}:/bin/bash" ];
-      extraGroupLines = [ "user:x:1000:" ];
-    })
+    fakeNss
     nixConf
   ];
 
@@ -41,6 +41,8 @@ pkgs.dockerTools.buildLayeredImage {
       "NIX_CONF_DIR=/etc/nix"
       "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
       "CLAUDE_CONFIG_DIR=${home}/.claude"
+      "BOTILLE_IMAGE_CLOSURE=${imageClosureInfo}"
+      "BOTILLE_IMAGE_REGISTRATION=${closureInfoReg}"
       # XDG overrides for tools that don't respect it natively
       "HISTFILE=${home}/.local/state/bash/history"
       "PYTHON_HISTORY=${home}/.local/state/python/history"

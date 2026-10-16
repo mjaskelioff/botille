@@ -5,13 +5,54 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
   workflow_call:
+    inputs:
+      lockfile-artifact:
+        description: Updated lockfile to validate before publication
+        type: string
+        default: ''
+      require-cache:
+        description: Fail unless both Linux images can be published to Cachix
+        type: boolean
+        default: false
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            vm-tests: true
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            vm-tests: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      BOTILLE_CACHE: ${{ vars.CACHIX_CACHE }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        if: inputs.lockfile-artifact != ''
+        with:
+          name: ${{ inputs.lockfile-artifact }}
+
+      - name: Require personal cache settings for publication
+        if: inputs.require-cache
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "$BOTILLE_CACHE" ] || [ -z "$CACHIX_AUTH_TOKEN" ]; then
+            echo 'CACHIX_CACHE and CACHIX_AUTH_TOKEN must be configured before publishing an automatic update.' >&2
+            exit 1
+          fi
 
       - uses: cachix/install-nix-action@v31
         with:
@@ -19,38 +60,39 @@ jobs:
             accept-flake-config = true
 
       - uses: cachix/cachix-action@v15
+        if: env.BOTILLE_CACHE != ''
         with:
-          name: delirium-systems
+          name: ${{ env.BOTILLE_CACHE }}
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
       - name: Enable KVM
+        if: matrix.vm-tests
         run: sudo chmod 666 /dev/kvm
 
       - name: Run all checks
+        if: matrix.vm-tests
         run: nix flake check --print-build-logs
 
-  # Builds and caches the aarch64-linux image — what macOS on Apple
-  # silicon substitutes.  The arm runners have no KVM, so the NixOS VM
-  # tests cannot run here; build the image and the non-VM checks instead.
-  build-aarch64:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-
-      - uses: cachix/cachix-action@v15
-        with:
-          name: delirium-systems
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-
       - name: Build container image and static checks
+        env:
+          BOTILLE_SYSTEM: ${{ matrix.system }}
         run: |
-          nix build --print-build-logs \
-            .#packages.aarch64-linux.container \
-            .#checks.aarch64-linux.statix \
-            .#checks.aarch64-linux.deadnix \
-            .#checks.aarch64-linux.launcher-args
+          nix build --no-link --print-build-logs \
+            ".#packages.$BOTILLE_SYSTEM.container" \
+            ".#checks.$BOTILLE_SYSTEM.statix" \
+            ".#checks.$BOTILLE_SYSTEM.cache-config" \
+            ".#checks.$BOTILLE_SYSTEM.deadnix" \
+            ".#checks.$BOTILLE_SYSTEM.launcher-args" \
+            ".#checks.$BOTILLE_SYSTEM.store-lifecycle"
+
+      - name: Publish image before allowing a lockfile update
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          BOTILLE_SYSTEM: ${{ matrix.system }}
+        run: |
+          if [ -n "$BOTILLE_CACHE" ] && [ -n "$CACHIX_AUTH_TOKEN" ]; then
+            image_path=$(nix path-info ".#packages.$BOTILLE_SYSTEM.container")
+            cachix push "$BOTILLE_CACHE" "$image_path"
+          else
+            echo 'Personal cache settings are incomplete; images were checked but not published.'
+          fi

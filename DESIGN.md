@@ -10,7 +10,7 @@ Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Op
 +--------------------------------------------------------+
 | Host (unprivileged user)                               |
 |                                                        |
-| $ nix run 'github:delirium-systems/botille' -- codex   |
+| $ nix run 'github:mjaskelioff/botille' -- codex        |
 | |                                                      |
 | rootless podman run ...                                |
 | +--------------------------------------------------+   |
@@ -31,7 +31,7 @@ Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Op
 ### 1. Nix Flake App (default)
 - A shell script wrapped as a Nix app (`writeShellApplication`)
 - Container image path is baked in at Nix evaluation time (no runtime `nix build`)
-- Tracks the loaded image's Nix store path in `~/.local/state/botille/loaded-image`; skips `podman load` if the same image is already present, reloads only when the store path changes
+- Uses dockerTools’ immutable image tag and queries the selected Podman backend before loading.  No host marker is trusted after image pruning, connection changes, or VM resets.
 - Runs the container with mounts and drops user into an interactive shell
 
 ### 2. Container Image (Nix-built)
@@ -43,8 +43,8 @@ Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Op
 ### 3. Nix Store Persistence (Copy + Bind Mount)
 - A named Podman volume (`botille-nix`) is mounted at `/var/nix-store`
 - On first run, the entrypoint copies the image's `/nix` to the volume (`cp --reflink=auto` for instant clones on CoW filesystems), then bind-mounts the volume copy over `/nix`
-- On image update, new store paths are merged alongside existing ones (non-destructive); the Nix DB is reset and reloaded from the new image closure
-- Entrypoint runs `nix-store --load-db` to register all image store paths and pins a GC root so they survive garbage collection
+- A volume lock serializes initialization and image updates.  A shared Nix GC lock excludes garbage collection until registrations and roots are complete.  Missing paths are copied through temporary directories and renamed into place only after copying finishes.  Image registrations are added to the existing database; user registrations are preserved.
+- The entrypoint registers the actual customized user database, packages, home-manager activation, and startup scripts.  It retains one GC root per image version, protecting containers that still use older images.  Operators can remove unused image roots before garbage collection; roots are not removed automatically.
 - Before starting the command or devshell, the entrypoint clears inherited and ambient `CAP_SYS_ADMIN`.  This capability is needed for the startup bind mount, but conflicts with Codex's Bubblewrap sandbox.  Other explicitly configured capabilities are preserved.
 - Subsequent runs reuse the volume — `nix-env`, `nix shell`, etc. persist installed packages
 
@@ -59,7 +59,7 @@ Run AI coding agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, Op
 - Subsequent runs: credentials, shell history, and tool configs already present in the volume
 - Volume lives in user's rootless Podman storage (`~/.local/share/containers/`)
 
-### 5. Network Isolation (OCI Hooks)
+### 5. Network Isolation (Linux OCI Hooks)
 - Rootless Podman with pasta networking on a custom subnet (10.171.0.0/24) to avoid collisions with common LAN ranges
 - Container IP: 10.171.0.100, gateway: 10.171.0.1
 - Pasta's `--map-gw` maps the gateway address to the host's loopback — services bound to `127.0.0.1` on the host are reachable via the gateway IP from inside the container
@@ -91,39 +91,39 @@ The host service **must** bind to `127.0.0.1`, not `0.0.0.0` — the container f
 - Rootless Podman — no daemon, no root privileges, runs entirely as the calling user
 - The selected `/work/<name>-<hash>` directory is read-write by default
 - The project mount exposes only the selected host directory; explicit extra mounts can expose more
-- LAN blocked, internet allowed
+- On Linux, LAN blocked and internet allowed by default.  On macOS, LAN access is allowed.
 
 ## Interface
 
 ```sh
 # Drop into a containerized shell with claude available
-nix run 'delirium-systems/botille'
+nix run 'github:mjaskelioff/botille'
 
 # Botille options precede the command; remaining args go to that command
-nix run 'delirium-systems/botille' -- claude
+nix run 'github:mjaskelioff/botille' -- claude
 
 # Allow TCP to specific ports on the host (e.g. llama.cpp, ollama)
 # Host service must bind 127.0.0.1 — binding 0.0.0.0 exposes it to the LAN
-nix run 'delirium-systems/botille' -- --host-port 8080
-nix run 'delirium-systems/botille' -- --host-port 8080 --host-port 11434 claude
+nix run 'github:mjaskelioff/botille' -- --host-port 8080
+nix run 'github:mjaskelioff/botille' -- --host-port 8080 --host-port 11434 claude
 
 # Disable LAN restrictions for this run (--allow-lan is consumed by the launcher, not forwarded to the container)
-nix run 'delirium-systems/botille' -- --allow-lan
-nix run 'delirium-systems/botille' -- --allow-lan claude
+nix run 'github:mjaskelioff/botille' -- --allow-lan
+nix run 'github:mjaskelioff/botille' -- --allow-lan claude
 
 # Enter the project's direnv dev shell before running the command
-nix run 'delirium-systems/botille' -- --devshell claude
-nix run 'delirium-systems/botille' -- --devshell
+nix run 'github:mjaskelioff/botille' -- --devshell claude
+nix run 'github:mjaskelioff/botille' -- --devshell
 
 # Expose ports to the host (e.g. for web UIs)
-nix run 'delirium-systems/botille' -- --port 4096:4096 opencode web --hostname 0.0.0.0
-nix run 'delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
+nix run 'github:mjaskelioff/botille' -- --port 4096:4096 opencode web --hostname 0.0.0.0
+nix run 'github:mjaskelioff/botille' -- -p 8080:3000 -p 9090:9090
 ```
 
 ### 7. Binary Caching (Cachix)
-- Flake `nixConfig` declares `delirium-systems`, `nix-community`, and `numtide` cachix caches as `extra-substituters` — users with `accept-flake-config = true` get pre-built binaries automatically
-- CI (GitHub Actions) pushes all newly-built store paths to the `delirium-systems` cache via `cachix/cachix-action`
-- The in-container `nix.conf` also includes both caches, so `nix build`/`nix shell` inside the container benefit from the same binary cache
+- Flake `nixConfig` declares `mjaskelioff-botille`, `delirium-systems`, `nix-community`, and `numtide` binary caches as `extra-substituters` — users with `accept-flake-config = true` get pre-built binaries automatically
+- CI builds both Linux images and uploads them when `CACHIX_AUTH_TOKEN` is configured.  `CACHIX_CACHE` selects the upload cache.  Automatic lockfile updates require successful builds and cache uploads for both architectures before committing.
+- The in-container `nix.conf` also includes the configured caches, so `nix build`/`nix shell` inside the container benefit from the same binary cache
 
 ## macOS Support
 
@@ -149,27 +149,27 @@ A Mac cannot build Linux derivations, so the image must be substituted from the 
 ```
 flake.nix                 → thin orchestrator wiring modules together
 ├── nix/
-│   ├── caches.nix        → binary cache URLs/keys (single source of truth)
+│   ├── caches.nix        → binary cache URLs/keys (checked against nixConfig)
 │   ├── packages.nix      → container package list
+│   ├── home.nix          → home-manager configuration
+│   ├── init-store.sh     → serialized store copying and registration
 │   ├── entrypoint.sh     → container entrypoint (standalone shell script)
 │   ├── entrypoint.nix    → builds entrypoint via replaceVarsWith
 │   ├── firewall.nix      → OCI hook: iptables LAN-blocking script
 │   ├── container.nix     → OCI image (dockerTools.buildLayeredImage)
 │   ├── launcher.nix      → launcher script (podman load + podman run)
 │   └── tests.nix         → NixOS VM tests for AI tool smoke checks
-├── home.nix              → home-manager configuration
-│
 ├── packages.container    → OCI image
 ├── apps.default          → launcher shell script
-├── checks                → statix, deadnix, launcher-args, ai-tools (NixOS VM test)
+├── checks                → statix, deadnix, launcher-args, store-lifecycle (Linux), ai-tools (NixOS VM test)
 └── formatter             → nixfmt
 ```
 
 ## Execution Flow
 
-1. User runs `nix run 'delirium-systems/botille'`
+1. User runs `nix run 'github:mjaskelioff/botille'`
 2. Nix builds the launcher script (which depends on the container image, so both are built/cached)
-3. Script checks if the current image (by Nix store path) is already loaded; if not, removes the old image and loads the new one
+3. Script queries Podman for the immutable image tag and loads the image if it is absent; other image versions remain available
 4. Script runs container with:
    - Physical host `$PWD` → `/work/<name>-<hash>` bind mount
    - `botille-home` volume → `/home/user`
@@ -180,9 +180,9 @@ flake.nix                 → thin orchestrator wiring modules together
 5. OCI `createContainer` hook fires, applying iptables REJECT rules for all private ranges using host-side binaries
 6. Podman drops `CAP_NET_ADMIN`/`NET_RAW` and starts the container process
 6b. OCI `poststart` hooks fire: ACCEPT rule for the container's own IP (enables pasta port forwarding), and if `--host-port` was used, ACCEPT rules for the gateway on those TCP ports
-7. Entrypoint registers image store paths in the Nix DB and pins a GC root
+7. Entrypoint serializes store updates, adds registrations without deleting the database, and pins the image version
 8. User lands in a shell with `claude`, `codex`, `gemini`, `copilot`, `opencode`, `pi`, `nix`, `git` on `$PATH`, working dir `/work/<name>-<hash>`
-8. On exit, file changes persist in host `cwd`; home directory and nix store persist in volumes
+9. On exit, file changes persist in host `cwd`; home directory and nix store persist in volumes
 
 ## Volume Layout
 

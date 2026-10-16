@@ -2,7 +2,7 @@
 
 **Bot** + Bas**tille** — a prison for your AI agent.
 
-Run coding agents inside a sandboxed, LAN-isolated rootless Podman container. Everything defined in a single Nix flake — nothing to install. See [DESIGN.md](DESIGN.md) for architecture details.
+Run coding agents inside a rootless Podman container.  Linux blocks LAN access by default; macOS currently allows LAN access.  The image and launcher are defined in a Nix flake.  See [DESIGN.md](DESIGN.md) for architecture details.
 
 ## 📋 Prerequisites
 
@@ -13,7 +13,7 @@ Run coding agents inside a sandboxed, LAN-isolated rootless Podman container. Ev
 ## 🔒 What it does
 
 - 📦 Builds a reproducible OCI container image with Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi, Nix, git, and common dev tools
-- 🌐 Blocks all LAN/private network access via iptables OCI hooks — only public internet allowed
+- 🌐 On Linux, blocks LAN/private network access via iptables OCI hooks; macOS has no LAN blocking
 - 🔑 Persists credentials and Nix store across runs via named Podman volumes
 - 🧑 Runs rootless — no daemon, no root, your UID mapped into the container
 
@@ -21,37 +21,37 @@ Run coding agents inside a sandboxed, LAN-isolated rootless Podman container. Ev
 
 ```sh
 # Drop into a containerized shell with claude on $PATH
-nix run 'github:delirium-systems/botille'
+nix run 'github:mjaskelioff/botille'
 
 # Pass a command to run inside the container (replaces default /bin/bash)
-nix run 'github:delirium-systems/botille' -- claude
+nix run 'github:mjaskelioff/botille' -- claude
 
 # Run Codex
-nix run 'github:delirium-systems/botille' -- codex
+nix run 'github:mjaskelioff/botille' -- codex
 
 # Allow access to a service on the host (e.g. llama.cpp, ollama)
 # The host service must bind to 127.0.0.1, not 0.0.0.0
 # Inside the container, find the host IP with: ip route show default | awk '{print $3}'
-nix run 'github:delirium-systems/botille' -- --host-port 8080
-nix run 'github:delirium-systems/botille' -- --host-port 8080 --host-port 11434 claude
+nix run 'github:mjaskelioff/botille' -- --host-port 8080
+nix run 'github:mjaskelioff/botille' -- --host-port 8080 --host-port 11434 claude
 
 # Disable LAN restrictions (allow access to private/LAN IP ranges)
-nix run 'github:delirium-systems/botille' -- --allow-lan
-nix run 'github:delirium-systems/botille' -- --allow-lan claude
+nix run 'github:mjaskelioff/botille' -- --allow-lan
+nix run 'github:mjaskelioff/botille' -- --allow-lan claude
 
 # Enter the project's direnv dev shell before running the command
-nix run 'github:delirium-systems/botille' -- --devshell claude
-nix run 'github:delirium-systems/botille' -- --devshell
+nix run 'github:mjaskelioff/botille' -- --devshell claude
+nix run 'github:mjaskelioff/botille' -- --devshell
 
 # Expose ports to access web UIs from the host (e.g. opencode)
-nix run 'github:delirium-systems/botille' -- --port 3000 opencode
-nix run 'github:delirium-systems/botille' -- -p 8080:3000 -p 9090:9090
+nix run 'github:mjaskelioff/botille' -- --port 3000 opencode
+nix run 'github:mjaskelioff/botille' -- -p 8080:3000 -p 9090:9090
 
 # Share the host's global Claude Code config with the container
-nix run 'github:delirium-systems/botille' -- --share-claude claude
+nix run 'github:mjaskelioff/botille' -- --share-claude claude
 
 # Share only the current project's Claude memory and transcripts
-nix run 'github:delirium-systems/botille' -- --share-memory claude
+nix run 'github:mjaskelioff/botille' -- --share-memory claude
 ```
 
 Your current directory is mounted at `/work/<name>-<hash>` inside the container.  The name comes from the directory basename, and the hash comes from its physical absolute host path.  Repeated launches and symlink aliases use the same container path; directories with the same name at different host paths use different container paths.  File changes persist on the host.  Credentials and installed packages persist in Podman volumes.
@@ -60,12 +60,12 @@ Put Botille options before the container command.  Once the command starts, its 
 
 Moving or renaming a host directory gives it a new container path.  Saved sessions from the previous `/work` layout remain in the home volume, but do not automatically become sessions for the new path.  No existing transcripts are rewritten or reassigned to a project.
 
-Pre-built binaries are available from the `delirium-systems` cachix cache — the flake configures this automatically when `accept-flake-config = true` is set in your Nix config.
+The flake reads the `mjaskelioff-botille` cache and upstream binary caches when `accept-flake-config = true` is set in your Nix config.  A fork-specific image must also be built and cached, or built inside the Podman VM on macOS.  Selecting a GitHub fork does not select a different binary cache.  This fork is based on [delirium-systems/botille](https://github.com/delirium-systems/botille).
 
 ### Shell alias
 
 ```sh
-alias botille="nix run 'github:delirium-systems/botille' --"
+alias botille="nix run 'github:mjaskelioff/botille' --"
 ```
 
 Then: `botille`, `botille claude`, `botille codex`, `botille --host-port 8080`, `botille --allow-lan`, `botille --devshell claude`, `botille --port 3000 opencode`, `botille --share-claude claude`, `botille --share-memory claude`.
@@ -110,41 +110,53 @@ Keep keys out of declarative Nix configuration, which becomes readable Nix store
 
 ### Customisation
 
-Create a wrapper `flake.nix` to customise the container without forking. `lib.mkApp` accepts two module lists:
+Create a wrapper `flake.nix` to customise the container.  `lib.mkBotille` returns an `app` and its `container`; `lib.mkApp` remains available when only the app is needed.  Both accept the following module lists:
 
-- **`extraHomeManagerModules`** — home-manager config (git identity, extra packages, shell aliases, etc.)
-- **`extraContainerModules`** — podman run flags (volumes, ports, environment, DNS, capabilities, etc.; see `nix/container-options.nix` for all options)
+- **`extraHomeManagerModules`**: home-manager configuration, such as git identity, packages, and shell aliases.
+- **`extraContainerModules`**: Podman settings, such as volumes, ports, environment, DNS, and capabilities.  See `nix/container-options.nix` for the options.
+
+The following wrapper exposes apps and images for each supported platform, including the Linux image needed by the macOS builder:
 
 ```nix
 {
-  inputs.botille.url = "github:delirium-systems/botille";
+  inputs.botille.url = "github:mjaskelioff/botille";
 
-  outputs = { self, botille }: {
-    apps.x86_64-linux.default = botille.lib.mkApp {
-      system = "x86_64-linux";
-      extraHomeManagerModules = [
-        {
-          programs.git = {
-            userEmail = "you@example.com";
-            userName  = "Your Name";
-          };
-        }
-      ];
-      extraContainerModules = [
-        {
-          volumes = [ "/tmp/claude-dir:/home/user/.claude/:Z" ];
-          environment.MY_VAR = "hello";
-          dns = lib.mkForce [ "8.8.8.8" ];
-        }
-      ];
+  outputs = { botille, ... }:
+    let
+      built = builtins.mapAttrs (system: _: botille.lib.mkBotille {
+        inherit system;
+        extraHomeManagerModules = [
+          {
+            programs.git.settings.user = {
+              email = "you@example.com";
+              name = "Your Name";
+            };
+          }
+        ];
+        extraContainerModules = [
+          ({ lib, ... }: {
+            ports = [ "127.0.0.1:3000:3000" ];
+            environment.MY_VAR = "hello";
+            dns = lib.mkForce [ "8.8.8.8" ];
+          })
+        ];
+      }) {
+        x86_64-linux = null;
+        aarch64-linux = null;
+        aarch64-darwin = null;
+      };
+    in {
+      apps = builtins.mapAttrs (_: value: { default = value.app; }) built;
+      packages = builtins.mapAttrs (_: value: { container = value.container; }) built;
     };
-  };
 }
 ```
 
-Then `nix run .` to use your customised container. Modules merge with standard NixOS semantics (lists concatenate, attrsets merge by key). Use `lib.mkForce` to replace defaults instead of merging. Runtime CLI flags (`-v`, `-p`) still work and append after declarative ones.
+Then run `nix run .`.  On macOS, first run `/path/to/botille/scripts/mac-build-image.sh .` from the wrapper directory and import the built image as directed by the script.
 
-> **Note:** customised images are not in the cachix cache and will be built locally on first use.
+Modules merge with standard NixOS semantics: lists concatenate, and attribute sets merge by key.  Use `lib.mkForce` to replace defaults.  Modules that use `lib` must receive it as an argument, as the example does.  Runtime CLI flags (`-v`, `-p`) append after declarative settings.
+
+Custom images usually need a build.  Linux can build them directly; macOS uses the Podman VM or a Linux builder.
 
 ## 🍎 macOS
 
@@ -163,20 +175,20 @@ On macOS, Podman runs Linux containers inside a lightweight VM (`podman machine`
 3. Run botille from a project directory under `/Users` — the podman machine only shares `/Users`, `/private`, `/tmp`, `/var/folders`, and `/Volumes` with the VM.
 
    ```sh
-   nix run --accept-flake-config 'github:delirium-systems/botille'
+   nix run --accept-flake-config 'github:mjaskelioff/botille'
    ```
 
 ### macOS limitations
 
 - **No LAN blocking.**  The firewall is enforced by OCI hooks that run on the container host with Nix-store binaries; on macOS the container host is the podman machine VM, which cannot see the Mac's Nix store, and the remote Podman client has no `--hooks-dir`.  The launcher prints a warning: the container can reach your LAN.  The rest of the sandbox (rootless container inside a VM, only `$PWD` bind-mounted) still applies.
 - **`--host-port` has no effect.**  There is no firewall to open, and pasta's gateway mapping points at the VM, not the Mac.  Services running on the Mac are reachable from the container at `host.containers.internal`.
-- **Images missing from the cache cannot be built locally.**  A Mac cannot build Linux derivations, and customised `mkApp` images are never in the cache.  `scripts/mac-build-image.sh` builds the image inside the podman machine and prints the (sudo) command that imports it into the host store.
+- **Images missing from the cache need a Linux build.**  A Mac cannot build Linux derivations natively.  Custom images need cache publication or a build in the Podman VM.  `scripts/mac-build-image.sh` builds the image inside the podman machine and prints the (sudo) command that imports it into the host store.
 
 ## ⚙️ How it works
 
-1. **Launcher** checks if the current container image is already loaded in Podman; reloads only when the Nix store path changes
-2. **OCI hooks** apply iptables rules in two stages: REJECT rules blocking RFC1918, CGNAT, and link-local ranges at `createContainer` (before the process starts), then an ACCEPT rule for the container's own IP at `poststart` (so pasta can forward exposed ports). `CAP_NET_ADMIN`/`CAP_NET_RAW` are dropped so rules are immutable from inside
-3. **Entrypoint** copies the image's Nix store to a persistent volume (first run only), registers store paths in the Nix DB, pins a GC root, and runs home-manager activation
+1. **Launcher** checks the selected Podman backend for the image’s immutable tag and loads it if absent.  Pruning images or resetting the machine is handled on the next launch.
+2. **On Linux, OCI hooks** apply iptables rules in two stages: REJECT rules blocking RFC1918, CGNAT, and link-local ranges at `createContainer` (before the process starts), then an ACCEPT rule for the container's own IP at `poststart` (so pasta can forward exposed ports). `CAP_NET_ADMIN`/`CAP_NET_RAW` are dropped so rules are immutable from inside
+3. **Entrypoint** serializes image updates, copies missing store paths, adds their registrations to the existing database, retains a GC root for each image version, and runs home-manager activation
 4. **Container starts** with your project at `/work/<name>-<hash>`, tools on `$PATH`, DNS forced to 1.1.1.1/1.0.0.1
 
 ### Volumes
@@ -191,7 +203,7 @@ Reset all state: `podman volume rm botille-home botille-nix`
 
 ## 🛡️ Security
 
-The primary security boundary is the **rootless Podman container**: the agent runs as an unprivileged user with no host network access to LAN/private ranges, and only the working directory is bind-mounted.
+The primary security boundary is the **rootless Podman container**.  The working directory is bind-mounted read-write; explicit sharing options expose additional paths.  Linux blocks LAN/private ranges by default.  **macOS does not block LAN access**.
 `--host-port PORT` opens a surgical exception for a single TCP port on the host — the host service **must** bind to `127.0.0.1` to prevent LAN exposure.
 `--allow-lan` disables the network firewall entirely for that run — use only when needed.
 
@@ -204,5 +216,13 @@ See [DESIGN.md](DESIGN.md) for the full threat model.
 ## 🔧 Troubleshooting
 
 - **First run is slow** — Nix store is copied to the persistent volume. Subsequent runs reuse it.
-- **`podman load` fails with `copy_file_range: is a directory`** — the image already exists. Run `podman rmi botille:latest` then retry. The launcher handles this automatically.
+- **`podman load` fails with `copy_file_range: is a directory`**: that image already exists.  The launcher checks its immutable tag before loading.  For manual loading, remove only the tag you intend to reload first.
+- **macOS reports `Required system: aarch64-linux`**: the exact image is missing from the readable caches.  Run `bash ~/git/botille/scripts/mac-build-image.sh ~/git/botille`, then run the import command it prints.  Retry Botille from your project directory.
+- **Old image versions consume space**: each image retains a root under `/nix/var/nix/gcroots/botille-images`.  Remove roots only for versions no container needs, then run `nix-store --gc`.  Rooted user-installed packages remain registered across updates.
 - **Reset everything** — `podman volume rm botille-home botille-nix` removes all persistent state.
+
+## CI image publication
+
+The check workflow builds both Linux architectures.  The automatic lockfile update publishes its commit only after checks and explicit Cachix uploads succeed for both images; it does not depend on a subsequent push workflow.
+
+Configure `CACHIX_AUTH_TOKEN` with write access to the target cache.  This fork uses `mjaskelioff-botille`.  Set the repository variable `CACHIX_CACHE` to the personal cache name.  CI does not upload to the upstream cache.  Add the personal cache URL and public key to `nix/caches.nix` and the literal `nixConfig` in `flake.nix` so launchers and VM builds can read it.  Without both settings, ordinary checks still run, while automatic lockfile publication fails with a clear error.  Workflows in a new fork must also be enabled in GitHub Actions.

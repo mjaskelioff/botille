@@ -11,22 +11,33 @@ import tempfile
 
 def podman():
     args = sys.argv[2:]
-    if args[:2] == ["machine", "inspect"]:
-        print("running")
-        return
-    if args[:1] == ["--hooks-dir"]:
+    hooks = args[:1] == ["--hooks-dir"]
+    if hooks:
         args = args[2:]
-    record = {"args": args}
+    record = {"args": args, "hooks": hooks}
+    image = Path(os.environ["TEST_PODMAN_IMAGE"])
+    status = 0
     if args[0] == "run":
+        assert image.exists(), "attempted to run an absent image"
         record["stdin"] = sys.stdin.read() if "-i" in args else ""
         print('{"ok":true}')
-    else:
+    elif args[:2] == ["machine", "inspect"]:
+        print(os.environ.get("TEST_MACHINE_STATE", "running"))
+    elif args[:2] == ["image", "exists"]:
+        status = 0 if image.exists() else 1
+    elif args[0] == "load":
+        image.touch()
         print("Podman image diagnostic")
+        # Simulate losing a concurrent load race after the image appeared.
+        status = int(os.environ.get("TEST_LOAD_STATUS", "0"))
+    else:
+        raise AssertionError(args)
     with open(os.environ["TEST_PODMAN_LOG"], "a") as log:
         log.write(json.dumps(record) + "\n")
+    sys.exit(status)
 
 
-def check(launcher, mock_bin):
+def check(launcher, mock_bin, platform):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         home = root / "home"
@@ -38,8 +49,10 @@ def check(launcher, mock_bin):
         alias = root / "alias"
         alias.symlink_to(first, target_is_directory=True)
         log = root / "podman.jsonl"
+        image = root / "loaded-image"
         env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(root / "state"),
-                   PATH=f"{mock_bin}:{os.environ['PATH']}", TEST_PODMAN_LOG=str(log))
+                   PATH=f"{mock_bin}:{os.environ['PATH']}", TEST_PODMAN_LOG=str(log),
+                   TEST_PODMAN_IMAGE=str(image))
 
         def run(cwd, *args, stdin="", env_extra=None):
             log.write_text("")
@@ -50,18 +63,23 @@ def check(launcher, mock_bin):
             # Image loading must not contaminate Codex's JSON output.
             assert result.stdout == '{"ok":true}\n', result.stdout
             records = [json.loads(line) for line in log.read_text().splitlines()]
+            inspections = [r for r in records if r["args"][:2] == ["machine", "inspect"]]
+            assert bool(inspections) == (platform == "darwin"), records
+            records = [r for r in records if r not in inspections]
             call = records[-1]
             assert call["args"][0] == "run", records
+            assert call["hooks"] == (platform == "linux"), call
+            assert ("LAN blocking is unavailable on macOS" in result.stderr) == (platform == "darwin")
             return call, records
 
         def value(args, flag):
             return args[args.index(flag) + 1]
 
         def command(args):
-            return args[args.index("botille:latest") + 1:]
+            return args[args.index("botille:mock-image") + 1:]
 
         call, records = run(first, "codex", "-p", "review", stdin="a piped prompt\n")
-        assert [r["args"][0] for r in records] == ["rmi", "load", "run"]
+        assert [r["args"][0] for r in records] == ["image", "load", "run"]
         args = call["args"]
         workdir = value(args, "-w")
         assert re.fullmatch(r"/work/same-name-[0-9a-f]{16}", workdir), workdir
@@ -72,8 +90,20 @@ def check(launcher, mock_bin):
         assert "-i" in args and "-t" not in args
 
         call, records = run(first, "codex")
-        assert len(records) == 1, records
+        assert [r["args"][0] for r in records] == ["image", "run"], records
         assert value(call["args"], "-w") == workdir
+        assert "--pull=never" in call["args"]
+        # A prune or a switch to a backend with no image must reload it,
+        # even if the old launcher's marker remains on the host.
+        marker = root / "state/botille/loaded-image"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("stale-image-path")
+        image.unlink()
+        _, records = run(first, "codex")
+        assert [r["args"][0] for r in records] == ["image", "load", "run"]
+        image.unlink()
+        _, records = run(first, "codex", env_extra={"TEST_LOAD_STATUS": "125"})
+        assert [r["args"][0] for r in records] == ["image", "load", "image", "run"]
         call, _ = run(alias, "codex")
         assert value(call["args"], "-w") == workdir
         call, _ = run(second, "codex")
@@ -121,7 +151,13 @@ def check(launcher, mock_bin):
             result = subprocess.run([launcher, *args], cwd=first, env=cold,
                                     input="", text=True, capture_output=True)
             assert result.returncode != 0, args
-            assert not log.read_text(), args
+            records = [json.loads(line) for line in log.read_text().splitlines()]
+            assert all(r["args"][:2] == ["machine", "inspect"] for r in records), args
+        if platform == "darwin":
+            result = subprocess.run([launcher, "true"], cwd=first,
+                                    env=dict(env, TEST_MACHINE_STATE="stopped"),
+                                    input="", text=True, capture_output=True)
+            assert result.returncode != 0 and "no running podman machine" in result.stderr
     print(f"Launcher checks passed: {launcher}")
 
 
