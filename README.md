@@ -98,6 +98,8 @@ cat prompt.txt | botille codex exec -
 botille codex exec --json "Summarize this repository" > result.jsonl
 ```
 
+To update the packaged agents, run `nix flake update llm-agents` in the Botille checkout, then rebuild or substitute the image on the next launch.  Keep `llm-agents` on its own `nixpkgs` pin: its packaging helpers can be newer than Botille's base packages, and matching upstream's pin allows its binary cache to be used.  On macOS, build uncached images with `bash scripts/mac-build-image.sh .`, run the import command it prints, then launch Botille again from your project directory.
+
 ### API keys
 
 Authenticate inside the container on first run.  Credentials persist in the `botille-home` volume.  For Codex API-key login, pass the host key through stdin:

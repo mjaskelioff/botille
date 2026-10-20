@@ -8,17 +8,12 @@ let
   claude-yolo = pkgs.writeShellScriptBin "claude-yolo" ''
     exec claude --dangerously-skip-permissions "$@"
   '';
-
-  # Upstream postPatch calls `node` which leaks into fetchNpmDeps (stdenvNoCC,
-  # no nodejs). Add nodejs to the FOD's nativeBuildInputs so the patch runs.
-  gemini-cli = llmAgentsPkgs.gemini-cli.overrideAttrs (old: {
-    npmDeps = old.npmDeps.overrideAttrs (odeps: {
-      nativeBuildInputs = odeps.nativeBuildInputs ++ [ pkgs.nodejs ];
-    });
-  });
 in
 [
   pkgs.bash
+  # Codex's /proc fallback needs Bubblewrap's pre-0.12 diagnostics.
+  # Prefer the base version on PATH: https://github.com/openai/codex/issues/52260
+  pkgs.bubblewrap
   pkgs.coreutils
   pkgs.git
   pkgs.gnugrep
@@ -41,7 +36,7 @@ in
   llmAgentsPkgs.claude-code
   claude-yolo
   llmAgentsPkgs.codex
-  gemini-cli
+  llmAgentsPkgs.gemini-cli
   llmAgentsPkgs.copilot-cli
   llmAgentsPkgs.opencode
   llmAgentsPkgs.pi

@@ -10,7 +10,8 @@
     };
     llm-agents = {
       url = "github:numtide/llm-agents.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
+      # Keep upstream's nixpkgs pin for its required packaging helpers and
+      # binary cache.  Agent updates can outpace Botille's base packages.
     };
     serena = {
       url = "github:oraios/serena";
