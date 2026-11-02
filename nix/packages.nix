@@ -8,12 +8,26 @@ let
   claude-yolo = pkgs.writeShellScriptBin "claude-yolo" ''
     exec claude --dangerously-skip-permissions "$@"
   '';
+
+  # Codex's /proc fallback still matches Bubblewrap's pre-0.12 path.
+  # Keep newer Bubblewrap fixes and restore only the diagnostic it expects.
+  # Remove once https://github.com/openai/codex/issues/52260 is fixed.
+  bubblewrap =
+    if pkgs.lib.versionAtLeast pkgs.bubblewrap.version "0.12" then
+      pkgs.bubblewrap.overrideAttrs (old: {
+        postPatch = (old.postPatch or "") + ''
+          substituteInPlace bubblewrap.c \
+            --replace-fail \
+              "\"Can't mount proc on %s\"" \
+              "\"Can't mount proc on /newroot%s\""
+        '';
+      })
+    else
+      pkgs.bubblewrap;
 in
 [
   pkgs.bash
-  # Codex's /proc fallback needs Bubblewrap's pre-0.12 diagnostics.
-  # Prefer the base version on PATH: https://github.com/openai/codex/issues/52260
-  pkgs.bubblewrap
+  bubblewrap
   pkgs.coreutils
   pkgs.git
   pkgs.gnugrep
