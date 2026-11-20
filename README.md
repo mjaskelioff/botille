@@ -13,6 +13,7 @@ Run coding agents inside a rootless Podman container.  Linux blocks LAN access b
 ## 🔒 What it does
 
 - 📦 Builds a reproducible OCI container image with Claude Code, Codex CLI, Gemini CLI, GitHub Copilot CLI, OpenCode, Pi, Nix, git, and common dev tools
+- Includes Lean’s `lean` and `lake` commands via Elan, which installs the version specified by a project’s `lean-toolchain` file on first use
 - 🌐 On Linux, blocks LAN/private network access via iptables OCI hooks; macOS has no LAN blocking
 - 🔑 Persists credentials and Nix store across runs via named Podman volumes
 - 🧑 Runs rootless — no daemon, no root, your UID mapped into the container

@@ -76,6 +76,7 @@ in
   pkgs.openssh
   pkgs.gnupg
   # General
+  pkgs.elan
   pkgs.nodejs
   pkgs.rsync
   pkgs.tmux
